@@ -46,15 +46,41 @@ export const scoreService = {
     }
 
     try {
-      const { data, error } = await supabase.rpc('increment_score', { delta_val: delta });
-      if (error) throw error;
+      // 1. Try the optimized RPC first (Atomically increments)
+      const { data: rpcData, error: rpcError } = await supabase.rpc('increment_score', { delta_val: delta });
       
-      localStorage.setItem(STORAGE_KEY, data.toString());
-      return data;
+      if (!rpcError) {
+        localStorage.setItem(STORAGE_KEY, rpcData.toString());
+        return rpcData;
+      }
+
+      console.warn('RPC increment failed, falling back to manual update:', rpcError.message);
+
+      // 2. Fallback: Manual Update (fetch -> calculate -> update)
+      // Note: This is less atomic but works without custom SQL functions
+      const currentScore = await this.getScore();
+      const nextScore = currentScore + delta;
+
+      const { data: updateData, error: updateError } = await supabase
+        .from('brady_stats')
+        .update({ score: nextScore })
+        .eq('id', 1)
+        .select('score')
+        .single();
+
+      if (updateError) {
+        throw new Error(`Manual update failed: ${updateError.message}`);
+      }
+
+      localStorage.setItem(STORAGE_KEY, updateData.score.toString());
+      return updateData.score;
     } catch (error) {
-      console.error('Supabase update failed:', error);
+      console.error('All Supabase update attempts failed:', error);
+      // Final fallback to local-only behavior so the UI doesn't break
       const current = await this.getScore();
-      return current + delta;
+      const localNext = current + delta;
+      localStorage.setItem(STORAGE_KEY, localNext.toString());
+      throw error; // Re-throw to let the UI know it was a sync failure
     }
   },
 
@@ -64,26 +90,22 @@ export const scoreService = {
   subscribeToChanges(callback: (newScore: number) => void) {
     if (!supabase) return () => {};
 
-    // Use a unique channel name to avoid collisions
     const channel = supabase
       .channel('brady_global_sync')
       .on(
         'postgres_changes',
         {
-          event: '*', // Listen to all events (INSERT/UPDATE)
+          event: '*', 
           schema: 'public',
           table: 'brady_stats'
         },
         (payload) => {
-          // Only trigger if it's our specific record (ID 1)
           if (payload.new && payload.new.id === 1 && typeof payload.new.score === 'number') {
             callback(payload.new.score);
           }
         }
       )
-      .subscribe((status) => {
-        console.log('Realtime Status:', status);
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);

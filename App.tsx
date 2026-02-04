@@ -3,17 +3,28 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { scoreService } from './services/supabase.ts';
 import { CooldownButton } from './components/CooldownButton.tsx';
 
+const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const COOLDOWN_KEY = 'brady_vote_cooldown';
+
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPulsing, setIsPulsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCloud, setIsCloud] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
   
-  // Track previous score to trigger pulse
   const prevScoreRef = useRef<number | null>(null);
 
-  // Initialize Score and Subscription
+  // Helper to calculate remaining cooldown
+  const getRemainingTime = useCallback(() => {
+    const lastVoted = localStorage.getItem(COOLDOWN_KEY);
+    if (!lastVoted) return 0;
+    const diff = Date.now() - parseInt(lastVoted, 10);
+    return Math.max(0, COOLDOWN_MS - diff);
+  }, []);
+
+  // Initialize Score, Subscription, and Cooldown Timer
   useEffect(() => {
     const init = async () => {
       try {
@@ -28,6 +39,10 @@ const App: React.FC = () => {
 
     init();
 
+    // Setup initial cooldown state
+    const remaining = getRemainingTime();
+    setTimeLeft(remaining);
+
     // Setup Realtime Subscription
     const unsubscribe = scoreService.subscribeToChanges((newScore) => {
       setScore(newScore);
@@ -36,7 +51,19 @@ const App: React.FC = () => {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [getRemainingTime]);
+
+  // Global Tick for the Cooldown Timer
+  useEffect(() => {
+    if (timeLeft > 0) {
+      const interval = setInterval(() => {
+        const next = getRemainingTime();
+        setTimeLeft(next);
+        if (next <= 0) clearInterval(interval);
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [timeLeft, getRemainingTime]);
 
   // Visual pulse whenever the score changes from anywhere
   useEffect(() => {
@@ -50,17 +77,25 @@ const App: React.FC = () => {
   }, [score]);
 
   const handleVote = useCallback(async (delta: number) => {
+    // Safety check for cooldown
+    if (timeLeft > 0 || isUpdating) return;
+
     setIsUpdating(true);
     try {
       const newScore = await scoreService.updateScore(delta);
       setScore(newScore);
+      
+      // Set the shared cooldown for both buttons
+      const now = Date.now();
+      localStorage.setItem(COOLDOWN_KEY, now.toString());
+      setTimeLeft(COOLDOWN_MS);
     } catch (err) {
       console.error("Failed to update score:", err);
       setError("Failed to sync");
     } finally {
       setIsUpdating(false);
     }
-  }, []);
+  }, [timeLeft, isUpdating]);
 
   if (score === null && !error) {
     return (
@@ -102,16 +137,20 @@ const App: React.FC = () => {
           label="POINT UP (+5)" 
           variant="up" 
           onClick={() => handleVote(5)}
-          cooldownKey="last_vote_up"
+          timeLeft={timeLeft}
+          totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
+          isLoading={isUpdating}
         />
         
         <CooldownButton 
           label="POINT DOWN (-5)" 
           variant="down" 
           onClick={() => handleVote(-5)}
-          cooldownKey="last_vote_down"
+          timeLeft={timeLeft}
+          totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
+          isLoading={isUpdating}
         />
       </section>
 
