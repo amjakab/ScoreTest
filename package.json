@@ -9,9 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.4",
     "react": "^19.2.4",
-    "@supabase/supabase-js": "^2.48.1"
+    "react-dom": "^19.2.4",
+    "@supabase/supabase-js": "2.48.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
