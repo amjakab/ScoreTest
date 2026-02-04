@@ -1,5 +1,5 @@
 {
   "name": "Brady's Points Tracker",
-  "description": "A high-stakes score tracking application for Brady with individual 5-minute cooldowns and persistent Supabase storage.",
+  "description": "A global real-time score tracking application for Brady with individual 5-minute cooldowns and persistent Supabase storage.",
   "requestFramePermissions": []
 }

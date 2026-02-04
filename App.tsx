@@ -1,13 +1,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { scoreService } from './services/supabase';
-import { getBradyReaction } from './services/gemini';
 import { CooldownButton } from './components/CooldownButton';
-import { BradyReaction } from './components/BradyReaction';
 
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
-  const [reaction, setReaction] = useState<string>("");
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCloud, setIsCloud] = useState(false);
@@ -40,12 +37,8 @@ const App: React.FC = () => {
     setIsUpdating(true);
     try {
       const newScore = await scoreService.updateScore(delta);
-      // We don't strictly need setScore here because the Realtime subscription 
-      // will catch it, but it makes the local UI feel faster.
+      // Local state update for immediate feedback
       setScore(newScore);
-      
-      const funnyText = await getBradyReaction(newScore, delta);
-      setReaction(funnyText);
     } catch (err) {
       console.error("Failed to update score:", err);
       setError("Failed to sync");
@@ -88,7 +81,7 @@ const App: React.FC = () => {
         </div>
       </section>
 
-      <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center">
+      <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
         <CooldownButton 
           label="POINT UP (+5)" 
           variant="up" 
@@ -106,15 +99,11 @@ const App: React.FC = () => {
         />
       </section>
 
-      <div className="w-full max-w-xl">
-        <BradyReaction text={reaction} isUpdating={isUpdating} />
-      </div>
-
       <footer className="mt-auto pt-16 text-center text-slate-600 text-xs max-w-sm">
         <p>
           {isCloud 
             ? "Syncing across all users. Each person has their own 5-minute cooldown." 
-            : "Set SUPABASE_URL and SUPABASE_ANON_KEY to enable global scores."}
+            : "Supabase connection active. Points are saved to your global account."}
         </p>
       </footer>
     </main>
