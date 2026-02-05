@@ -5,10 +5,11 @@ export interface ScoreData {
   updated_at: string;
 }
 
-export interface HistoryEvent {
+export interface HistoryEntry {
   id: string;
-  change: number;
-  timestamp: number;
+  delta: number;
+  new_score: number;
+  created_at: string;
 }
 
 export enum VoteType {

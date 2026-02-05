@@ -1,5 +1,6 @@
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { HistoryEntry } from '../types';
 
 const supabaseUrl = 'https://tfarghozogplmnwhzudx.supabase.co';
 const supabaseAnonKey = 'sb_publishable_J-aaKJLQVqVuCL-igY1PVw_rpKcCNXH';
@@ -28,12 +29,36 @@ export const scoreService = {
         .eq('id', 1)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        // If row doesn't exist, try to create it
+        if (error.code === 'PGRST116') {
+           await supabase.from('brady_stats').insert([{ id: 1, score: 0 }]);
+           return 0;
+        }
+        throw error;
+      }
       return data.score;
     } catch (error) {
       console.warn('Supabase fetch failed:', error);
       const saved = localStorage.getItem(STORAGE_KEY);
       return saved ? parseInt(saved, 10) : 0;
+    }
+  },
+
+  async getHistory(limit = 20): Promise<HistoryEntry[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      
+      if (error) throw error;
+      return data || [];
+    } catch (err) {
+      console.error('Failed to fetch history:', err);
+      return [];
     }
   },
 
@@ -46,62 +71,70 @@ export const scoreService = {
     }
 
     try {
-      // 1. Try the optimized RPC first (Atomically increments)
+      let finalScore: number;
+
+      // 1. Try atomic increment via RPC
       const { data: rpcData, error: rpcError } = await supabase.rpc('increment_score', { delta_val: delta });
       
-      if (!rpcError) {
-        localStorage.setItem(STORAGE_KEY, rpcData.toString());
-        return rpcData;
+      if (!rpcError && rpcData !== null) {
+        finalScore = rpcData;
+      } else {
+        console.warn('RPC failed, falling back to manual update:', rpcError?.message);
+        
+        const currentScore = await this.getScore();
+        const nextScore = currentScore + delta;
+        
+        const { data: updateData, error: updateError } = await supabase
+          .from('brady_stats')
+          .update({ score: nextScore, updated_at: new Date().toISOString() })
+          .eq('id', 1)
+          .select('score')
+          .single();
+        
+        if (updateError) throw new Error(`DB Update Error: ${updateError.message}`);
+        finalScore = updateData.score;
       }
 
-      console.warn('RPC increment failed, falling back to manual update:', rpcError.message);
+      // 2. Log to History (Crucial for the Graph)
+      const { error: historyError } = await supabase
+        .from('score_history')
+        .insert([{ 
+          delta: delta, 
+          new_score: finalScore 
+        }]);
 
-      // 2. Fallback: Manual Update (fetch -> calculate -> update)
-      // Note: This is less atomic but works without custom SQL functions
-      const currentScore = await this.getScore();
-      const nextScore = currentScore + delta;
-
-      const { data: updateData, error: updateError } = await supabase
-        .from('brady_stats')
-        .update({ score: nextScore })
-        .eq('id', 1)
-        .select('score')
-        .single();
-
-      if (updateError) {
-        throw new Error(`Manual update failed: ${updateError.message}`);
+      if (historyError) {
+        console.error('History Log Error (Check if columns delta/new_score exist):', historyError.message);
       }
 
-      localStorage.setItem(STORAGE_KEY, updateData.score.toString());
-      return updateData.score;
-    } catch (error) {
-      console.error('All Supabase update attempts failed:', error);
-      // Final fallback to local-only behavior so the UI doesn't break
-      const current = await this.getScore();
-      const localNext = current + delta;
-      localStorage.setItem(STORAGE_KEY, localNext.toString());
-      throw error; // Re-throw to let the UI know it was a sync failure
+      localStorage.setItem(STORAGE_KEY, finalScore.toString());
+      return finalScore;
+    } catch (error: any) {
+      console.error('CRITICAL: Update failed:', error.message);
+      throw error;
     }
   },
 
-  /**
-   * Refined Real-time Subscription
-   */
-  subscribeToChanges(callback: (newScore: number) => void) {
+  subscribeToChanges(onScore: (newScore: number) => void, onHistory: (entry: HistoryEntry) => void) {
     if (!supabase) return () => {};
 
     const channel = supabase
       .channel('brady_global_sync')
       .on(
         'postgres_changes',
-        {
-          event: '*', 
-          schema: 'public',
-          table: 'brady_stats'
-        },
+        { event: 'UPDATE', schema: 'public', table: 'brady_stats', filter: 'id=eq.1' },
         (payload) => {
-          if (payload.new && payload.new.id === 1 && typeof payload.new.score === 'number') {
-            callback(payload.new.score);
+          if (payload.new && typeof payload.new.score === 'number') {
+            onScore(payload.new.score);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'score_history' },
+        (payload) => {
+          if (payload.new) {
+            onHistory(payload.new as HistoryEntry);
           }
         }
       )

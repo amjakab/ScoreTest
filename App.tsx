@@ -1,13 +1,16 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { scoreService } from './services/supabase.ts';
 import { CooldownButton } from './components/CooldownButton.tsx';
+import { ScoreHistoryChart } from './components/ScoreHistoryChart.tsx';
+import { HistoryEntry } from './types.ts';
 
-const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
+const HISTORY_LIMIT = 20;
 
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isPulsing, setIsPulsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +19,6 @@ const App: React.FC = () => {
   
   const prevScoreRef = useRef<number | null>(null);
 
-  // Helper to calculate remaining cooldown
   const getRemainingTime = useCallback(() => {
     const lastVoted = localStorage.getItem(COOLDOWN_KEY);
     if (!lastVoted) return 0;
@@ -24,12 +26,16 @@ const App: React.FC = () => {
     return Math.max(0, COOLDOWN_MS - diff);
   }, []);
 
-  // Initialize Score, Subscription, and Cooldown Timer
+  // Fetch initial data
   useEffect(() => {
     const init = async () => {
       try {
-        const currentScore = await scoreService.getScore();
+        const [currentScore, recentHistory] = await Promise.all([
+          scoreService.getScore(),
+          scoreService.getHistory(HISTORY_LIMIT)
+        ]);
         setScore(currentScore);
+        setHistory(recentHistory);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
       } catch (e) {
@@ -38,22 +44,17 @@ const App: React.FC = () => {
     };
 
     init();
+    setTimeLeft(getRemainingTime());
 
-    // Setup initial cooldown state
-    const remaining = getRemainingTime();
-    setTimeLeft(remaining);
+    const unsubscribe = scoreService.subscribeToChanges(
+      (newScore) => setScore(newScore),
+      (newEntry) => setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT))
+    );
 
-    // Setup Realtime Subscription
-    const unsubscribe = scoreService.subscribeToChanges((newScore) => {
-      setScore(newScore);
-    });
-
-    return () => {
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, [getRemainingTime]);
 
-  // Global Tick for the Cooldown Timer
+  // Handle cooldown timer
   useEffect(() => {
     if (timeLeft > 0) {
       const interval = setInterval(() => {
@@ -65,7 +66,7 @@ const App: React.FC = () => {
     }
   }, [timeLeft, getRemainingTime]);
 
-  // Visual pulse whenever the score changes from anywhere
+  // Pulse Effect on score change
   useEffect(() => {
     if (score !== null && prevScoreRef.current !== null && score !== prevScoreRef.current) {
       setIsPulsing(true);
@@ -77,29 +78,32 @@ const App: React.FC = () => {
   }, [score]);
 
   const handleVote = useCallback(async (delta: number) => {
-    // Safety check for cooldown
     if (timeLeft > 0 || isUpdating) return;
-
     setIsUpdating(true);
     try {
-      const newScore = await scoreService.updateScore(delta);
-      setScore(newScore);
-      
-      // Set the shared cooldown for both buttons
-      const now = Date.now();
-      localStorage.setItem(COOLDOWN_KEY, now.toString());
+      await scoreService.updateScore(delta);
+      localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
     } catch (err) {
-      console.error("Failed to update score:", err);
-      setError("Failed to sync");
+      console.error("Vote failed:", err);
+      setError("Sync failed");
     } finally {
       setIsUpdating(false);
     }
   }, [timeLeft, isUpdating]);
 
+  const formatRelativeTime = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    if (diffInSeconds < 60) return 'Just now';
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   if (score === null && !error) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex items-center justify-center min-h-screen bg-[#1a1a2e]">
         <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-rose-500"></div>
       </div>
     );
@@ -107,28 +111,28 @@ const App: React.FC = () => {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-12 flex flex-col items-center min-h-screen">
-      <header className="text-center mb-16">
+      <header className="text-center mb-12">
         <h1 className="text-6xl md:text-8xl font-bangers tracking-wider text-rose-500 drop-shadow-[0_0_15px_rgba(233,69,96,0.3)]">
           BRADY&apos;S POINTS
         </h1>
-        <p className="mt-4 text-slate-400 font-semibold tracking-widest uppercase text-sm">
-          Global Real-time Ranking
+        <p className="mt-4 text-slate-400 font-semibold tracking-widest uppercase text-xs">
+          Global Real-time Analytics
         </p>
       </header>
 
-      <section className={`relative w-full max-w-md bg-slate-900/50 backdrop-blur-md rounded-[3rem] p-12 border border-slate-700 shadow-2xl mb-12 flex flex-col items-center transition-all duration-300 ${isPulsing ? 'scale-105 border-emerald-500/50 shadow-emerald-500/20' : 'scale-100'}`}>
-        <div className="absolute -top-6 bg-slate-800 px-6 py-2 rounded-full border border-slate-700 text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full bg-emerald-500 animate-pulse`}></span>
-          Live Scoreboard
+      <section className={`relative w-full max-w-md bg-slate-900/50 backdrop-blur-md rounded-[3rem] p-10 border border-slate-700 shadow-2xl mb-12 flex flex-col items-center transition-all duration-300 ${isPulsing ? 'scale-105 border-emerald-500/50 shadow-emerald-500/20' : 'scale-100'}`}>
+        <div className="absolute -top-4 bg-slate-800 px-4 py-1 rounded-full border border-slate-700 text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse`}></span>
+          Live Score
         </div>
         
         <div className={`text-9xl font-bangers transition-all duration-500 ${score !== null && score >= 0 ? 'text-emerald-400' : 'text-rose-500'} ${isUpdating ? 'opacity-50' : 'opacity-100'}`}>
           {score ?? 0}
         </div>
         
-        <div className="mt-4 flex items-center gap-2 text-slate-500 text-sm font-mono">
+        <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-          {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED & SYNCED' : 'LOCAL MODE'}
+          {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
         </div>
       </section>
 
@@ -154,12 +158,40 @@ const App: React.FC = () => {
         />
       </section>
 
-      <footer className="mt-auto pt-16 text-center text-slate-600 text-xs max-w-sm">
-        <p>
-          {isCloud 
-            ? "Connected to Supabase. Everyone sees these points update instantly." 
-            : "Connection error. Points are temporary."}
-        </p>
+      {/* Analytics Graph */}
+      <section className="w-full max-w-md mb-4">
+        <ScoreHistoryChart history={history} />
+      </section>
+
+      {/* Activity Log Section */}
+      <section className="w-full max-w-md bg-slate-900/30 rounded-2xl p-6 border border-slate-800">
+        <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          Recent Activity
+        </h3>
+        <div className="space-y-3">
+          {history.length === 0 ? (
+            <p className="text-slate-600 text-xs italic py-2">No recent activity detected.</p>
+          ) : (
+            history.slice(0, 5).map((entry) => (
+              <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
+                <div className="flex items-center gap-3">
+                  <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
+                  </span>
+                  <span className="text-slate-400">Score is now {entry.new_score}</span>
+                </div>
+                <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <footer className="mt-12 text-center text-slate-600 text-[10px] max-w-sm uppercase tracking-tighter">
+        Secure Real-time Data Visualization.
       </footer>
     </main>
   );
