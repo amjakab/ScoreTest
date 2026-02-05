@@ -45,6 +45,24 @@ export const scoreService = {
     }
   },
 
+  async getAllTimeHigh(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('new_score')
+        .order('new_score', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error) throw error;
+      return data?.new_score ?? 0;
+    } catch (err) {
+      console.error('Failed to fetch all-time high:', err);
+      return 0;
+    }
+  },
+
   async getHistory(limit = 20): Promise<HistoryEntry[]> {
     if (!supabase) return [];
     try {

@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [allTimeHigh, setAllTimeHigh] = useState<number>(0);
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -30,12 +31,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [currentScore, recentHistory] = await Promise.all([
+        const [currentScore, recentHistory, highScore] = await Promise.all([
           scoreService.getScore(),
-          scoreService.getHistory(HISTORY_LIMIT)
+          scoreService.getHistory(HISTORY_LIMIT),
+          scoreService.getAllTimeHigh()
         ]);
         setScore(currentScore);
         setHistory(recentHistory);
+        setAllTimeHigh(highScore);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
       } catch (e) {
@@ -47,8 +50,14 @@ const App: React.FC = () => {
     setTimeLeft(getRemainingTime());
 
     const unsubscribe = scoreService.subscribeToChanges(
-      (newScore) => setScore(newScore),
-      (newEntry) => setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT))
+      (newScore) => {
+        setScore(newScore);
+        setAllTimeHigh(prev => Math.max(prev, newScore));
+      },
+      (newEntry) => {
+        setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT));
+        setAllTimeHigh(prev => Math.max(prev, newEntry.new_score));
+      }
     );
 
     return () => unsubscribe();
@@ -133,6 +142,21 @@ const App: React.FC = () => {
         <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
+        </div>
+      </section>
+
+      <section className="w-full max-w-md mb-8 flex justify-center">
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl px-6 py-3 flex items-center gap-3">
+          <span className="text-amber-400 text-lg">&#9733;</span>
+          <div className="flex flex-col">
+            <span className="text-amber-500/70 text-[10px] font-bold uppercase tracking-widest">All-Time High</span>
+            <span className="text-amber-400 text-2xl font-bangers">{allTimeHigh}</span>
+          </div>
+          {score !== null && score >= allTimeHigh && score > 0 && (
+            <span className="ml-2 text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse">
+              Record!
+            </span>
+          )}
         </div>
       </section>
 
