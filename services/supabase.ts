@@ -1,6 +1,6 @@
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { HistoryEntry } from '../types';
+import { HistoryEntry, NewsSummary } from '../types';
 
 const supabaseUrl = 'https://tfarghozogplmnwhzudx.supabase.co';
 const supabaseAnonKey = 'sb_publishable_J-aaKJLQVqVuCL-igY1PVw_rpKcCNXH';
@@ -112,6 +112,22 @@ export const scoreService = {
     } catch (error: any) {
       console.error('CRITICAL: Update failed:', error.message);
       throw error;
+    }
+  },
+
+  async getNewsSummaries(): Promise<NewsSummary[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase
+        .from('news_summaries')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    } catch (err) {
+      console.error('Failed to fetch news summaries:', err);
+      return [];
     }
   },
 

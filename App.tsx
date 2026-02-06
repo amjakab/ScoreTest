@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { scoreService } from './services/supabase.ts';
 import { CooldownButton } from './components/CooldownButton.tsx';
 import { ScoreHistoryChart } from './components/ScoreHistoryChart.tsx';
-import { HistoryEntry } from './types.ts';
+import { HistoryEntry, NewsSummary } from './types.ts';
 
 const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [news, setNews] = useState<NewsSummary[]>([]);
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -30,12 +31,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [currentScore, recentHistory] = await Promise.all([
+        const [currentScore, recentHistory, newsSummaries] = await Promise.all([
           scoreService.getScore(),
-          scoreService.getHistory(HISTORY_LIMIT)
+          scoreService.getHistory(HISTORY_LIMIT),
+          scoreService.getNewsSummaries()
         ]);
         setScore(currentScore);
         setHistory(recentHistory);
+        setNews(newsSummaries);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
       } catch (e) {
@@ -189,6 +192,28 @@ const App: React.FC = () => {
           )}
         </div>
       </section>
+
+      {/* News Summaries Section */}
+      {news.length > 0 && (
+        <section className="w-full max-w-md mt-8 bg-slate-900/30 rounded-2xl p-6 border border-slate-800">
+          <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+            </svg>
+            News
+          </h3>
+          <div className="space-y-3">
+            {news.map((item) => (
+              <div key={item.id} className="py-2 border-b border-slate-800/50 last:border-0">
+                <p className="text-slate-300 text-xs leading-relaxed">{item.summary}</p>
+                <span className="text-slate-600 text-[10px] mt-1 block">
+                  {new Date(item.created_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <footer className="mt-12 text-center text-slate-600 text-[10px] max-w-sm uppercase tracking-tighter">
         Secure Real-time Data Visualization.
