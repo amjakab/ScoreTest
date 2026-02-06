@@ -12,6 +12,12 @@ export interface HistoryEntry {
   created_at: string;
 }
 
+export interface NewsSummary {
+  id: string;
+  summary: string;
+  created_at: string;
+}
+
 export enum VoteType {
   UP = 'UP',
   DOWN = 'DOWN'
