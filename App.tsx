@@ -44,13 +44,17 @@ const App: React.FC = () => {
         setNews(newsSummaries);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
+
+        // Check server-side cooldown (IP-based) and use whichever is longer
+        const serverCooldown = await scoreService.checkCooldown();
+        const localCooldown = getRemainingTime();
+        setTimeLeft(Math.max(serverCooldown, localCooldown));
       } catch (e) {
         setError("Connection error");
       }
     };
 
     init();
-    setTimeLeft(getRemainingTime());
 
     const unsubscribe = scoreService.subscribeToChanges(
       (newScore) => setScore(newScore),
@@ -87,7 +91,15 @@ const App: React.FC = () => {
     if (timeLeft > 0 || isUpdating) return;
     setIsUpdating(true);
     try {
+      // Double-check server-side cooldown to prevent bypass
+      const serverCooldown = await scoreService.checkCooldown();
+      if (serverCooldown > 0) {
+        setTimeLeft(serverCooldown);
+        return;
+      }
+
       await scoreService.updateScore(delta);
+      await scoreService.recordVote();
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
     } catch (err) {
