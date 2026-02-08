@@ -167,7 +167,19 @@ const App: React.FC = () => {
           {score ?? 0}
         </div>
         
-        <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
+        {(() => {
+          const today = new Date().toDateString();
+          const dailyChange = history
+            .filter(entry => new Date(entry.created_at).toDateString() === today)
+            .reduce((sum, entry) => sum + entry.delta, 0);
+          return (
+            <div className={`mt-2 text-sm font-bold font-mono ${dailyChange > 0 ? 'text-emerald-400' : dailyChange < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+              Today: {dailyChange > 0 ? '+' : ''}{dailyChange}
+            </div>
+          );
+        })()}
+
+        <div className="mt-3 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
         </div>
@@ -251,23 +263,15 @@ const App: React.FC = () => {
       {(() => {
         const today = new Date().toDateString();
         const todaysNews = news.filter(item => new Date(item.created_at).toDateString() === today);
-        const dailyChange = history
-          .filter(entry => new Date(entry.created_at).toDateString() === today)
-          .reduce((sum, entry) => sum + entry.delta, 0);
 
         return todaysNews.length > 0 ? (
           <section className="w-full max-w-md mt-8 bg-slate-900/30 rounded-2xl p-6 border border-slate-800">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] flex items-center gap-2">
-                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
-                </svg>
-                Today's News
-              </h3>
-              <span className={`text-[10px] font-bold font-mono ${dailyChange > 0 ? 'text-emerald-400' : dailyChange < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
-                Daily: {dailyChange > 0 ? '+' : ''}{dailyChange}
-              </span>
-            </div>
+            <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+              </svg>
+              Today's News
+            </h3>
             <div className="space-y-3">
               {todaysNews.map((item) => (
                 <div key={item.id} className="py-2 border-b border-slate-800/50 last:border-0">
