@@ -20,17 +20,22 @@ export const ScoreHistoryChart: React.FC<ScoreHistoryChartProps> = ({ history })
 
   const padding = 40;
   const width = 500;
-  const height = 200;
+  const height = 220;
 
   const minScore = Math.min(...data.map(d => d.new_score));
   const maxScore = Math.max(...data.map(d => d.new_score));
   const scoreRange = Math.max(maxScore - minScore, 10); // Ensure some vertical scale if scores are flat
-  
-  const yScale = (score: number) => 
+
+  const yScale = (score: number) =>
     height - padding - ((score - minScore) / scoreRange) * (height - 2 * padding);
-  
-  const xScale = (index: number) => 
+
+  const xScale = (index: number) =>
     padding + (index / (data.length - 1)) * (width - 2 * padding);
+
+  // Determine which points get labels to avoid clutter
+  const labelStep = data.length <= 10 ? 1 : data.length <= 20 ? 2 : Math.ceil(data.length / 10);
+  const shouldShowLabel = (i: number) =>
+    i === 0 || i === data.length - 1 || i % labelStep === 0;
 
   const points = data.map((d, i) => `${xScale(i)},${yScale(d.new_score)}`).join(' ');
   
@@ -113,6 +118,22 @@ export const ScoreHistoryChart: React.FC<ScoreHistoryChartProps> = ({ history })
             <title>Score: {d.new_score} ({d.delta > 0 ? '+' : ''}{d.delta})</title>
           </circle>
         ))}
+
+        {/* Point Labels */}
+        {data.map((d, i) => shouldShowLabel(i) ? (
+          <text
+            key={`label-${d.id}`}
+            x={xScale(i)}
+            y={yScale(d.new_score) - 10}
+            textAnchor="middle"
+            fill={d.delta > 0 ? '#10b981' : '#e94560'}
+            fontSize="9"
+            fontWeight="bold"
+            fontFamily="monospace"
+          >
+            {d.new_score}
+          </text>
+        ) : null)}
       </svg>
       
       <div className="flex justify-between mt-2 text-[8px] text-slate-600 uppercase tracking-widest font-bold">
