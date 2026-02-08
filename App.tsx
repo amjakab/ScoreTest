@@ -17,6 +17,9 @@ const App: React.FC = () => {
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [news, setNews] = useState<NewsSummary[]>([]);
+  const [showAllTime, setShowAllTime] = useState(false);
+  const [allHistory, setAllHistory] = useState<HistoryEntry[] | null>(null);
+  const [loadingAllHistory, setLoadingAllHistory] = useState(false);
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -104,6 +107,25 @@ const App: React.FC = () => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const handleToggleAllTime = useCallback(async () => {
+    if (showAllTime) {
+      setShowAllTime(false);
+      return;
+    }
+    setShowAllTime(true);
+    if (!allHistory) {
+      setLoadingAllHistory(true);
+      try {
+        const all = await scoreService.getHistory(1000);
+        setAllHistory(all);
+      } catch (err) {
+        console.error('Failed to fetch all history:', err);
+      } finally {
+        setLoadingAllHistory(false);
+      }
+    }
+  }, [showAllTime, allHistory]);
+
   if (score === null && !error) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#1a1a2e]">
@@ -163,7 +185,27 @@ const App: React.FC = () => {
 
       {/* Analytics Graph */}
       <section className="w-full max-w-md mb-4">
-        <ScoreHistoryChart history={history} />
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={handleToggleAllTime}
+            className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full border transition-all duration-200"
+            style={{
+              color: showAllTime ? '#e94560' : '#64748b',
+              borderColor: showAllTime ? '#e9456040' : '#334155',
+              backgroundColor: showAllTime ? '#e9456010' : 'transparent',
+            }}
+          >
+            {loadingAllHistory ? (
+              <span className="animate-spin inline-block w-3 h-3 border border-rose-500 border-t-transparent rounded-full"></span>
+            ) : (
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
+              </svg>
+            )}
+            {showAllTime ? 'All Time' : 'Recent'}
+          </button>
+        </div>
+        <ScoreHistoryChart history={showAllTime && allHistory ? allHistory : history} />
       </section>
 
       {/* Activity Log Section */}
