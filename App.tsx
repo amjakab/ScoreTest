@@ -185,6 +185,18 @@ const App: React.FC = () => {
         </div>
       </section>
 
+      {timeLeft > 0 && (
+        <div className="w-full max-w-md mb-6 bg-slate-900/50 rounded-xl px-5 py-3 border border-slate-700 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></div>
+            <span className="text-slate-400 text-xs font-bold uppercase tracking-widest">Cooldown Active</span>
+          </div>
+          <span className="text-amber-400 text-sm font-mono font-bold">
+            {Math.floor(timeLeft / 60000)}:{Math.floor((timeLeft % 60000) / 1000).toString().padStart(2, '0')}
+          </span>
+        </div>
+      )}
+
       <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
         <CooldownButton 
           label="POINT UP (+5)" 
