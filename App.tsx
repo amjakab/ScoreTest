@@ -252,11 +252,11 @@ const App: React.FC = () => {
           </svg>
           Recent Activity
         </h3>
-        <div className="space-y-3">
+        <div className="space-y-3 max-h-60 overflow-y-auto">
           {history.length === 0 ? (
             <p className="text-slate-600 text-xs italic py-2">No recent activity detected.</p>
           ) : (
-            history.slice(0, 5).map((entry) => (
+            history.map((entry) => (
               <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
                 <div className="flex items-center gap-3">
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
