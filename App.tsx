@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [showAllTime, setShowAllTime] = useState(false);
   const [allHistory, setAllHistory] = useState<HistoryEntry[] | null>(null);
   const [loadingAllHistory, setLoadingAllHistory] = useState(false);
+  const [dailyChange, setDailyChange] = useState<number>(0);
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -34,14 +35,16 @@ const App: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [currentScore, recentHistory, newsSummaries] = await Promise.all([
+        const [currentScore, recentHistory, newsSummaries, todayChange] = await Promise.all([
           scoreService.getScore(),
           scoreService.getHistory(HISTORY_LIMIT),
-          scoreService.getNewsSummaries()
+          scoreService.getNewsSummaries(),
+          scoreService.getTodayChange()
         ]);
         setScore(currentScore);
         setHistory(recentHistory);
         setNews(newsSummaries);
+        setDailyChange(todayChange);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
 
@@ -58,7 +61,12 @@ const App: React.FC = () => {
 
     const unsubscribe = scoreService.subscribeToChanges(
       (newScore) => setScore(newScore),
-      (newEntry) => setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT))
+      (newEntry) => {
+        setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT));
+        if (new Date(newEntry.created_at).toDateString() === new Date().toDateString()) {
+          setDailyChange(prev => prev + newEntry.delta);
+        }
+      }
     );
 
     return () => unsubscribe();
@@ -167,17 +175,9 @@ const App: React.FC = () => {
           {score ?? 0}
         </div>
         
-        {(() => {
-          const today = new Date().toDateString();
-          const dailyChange = history
-            .filter(entry => new Date(entry.created_at).toDateString() === today)
-            .reduce((sum, entry) => sum + entry.delta, 0);
-          return (
-            <div className={`mt-2 text-sm font-bold font-mono ${dailyChange > 0 ? 'text-emerald-400' : dailyChange < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
-              Today: {dailyChange > 0 ? '+' : ''}{dailyChange}
-            </div>
-          );
-        })()}
+        <div className={`mt-2 text-sm font-bold font-mono ${dailyChange > 0 ? 'text-emerald-400' : dailyChange < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+          Today: {dailyChange > 0 ? '+' : ''}{dailyChange}
+        </div>
 
         <div className="mt-3 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>

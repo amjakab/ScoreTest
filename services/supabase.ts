@@ -77,6 +77,25 @@ export const scoreService = {
     }
   },
 
+  async getTodayChange(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('delta')
+        .gte('created_at', todayStart.toISOString());
+
+      if (error) throw error;
+      return (data || []).reduce((sum, entry) => sum + entry.delta, 0);
+    } catch (err) {
+      console.error('Failed to fetch today change:', err);
+      return 0;
+    }
+  },
+
   async updateScore(delta: number): Promise<number> {
     if (!supabase) {
       const current = await this.getScore();
