@@ -250,13 +250,16 @@ const App: React.FC = () => {
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          Recent Activity
+          Last 24 Hours
         </h3>
-        <div className="space-y-3 max-h-60 overflow-y-auto">
-          {history.length === 0 ? (
-            <p className="text-slate-600 text-xs italic py-2">No recent activity detected.</p>
-          ) : (
-            history.map((entry) => (
+        <div className="space-y-3 max-h-60 overflow-y-auto pr-3">
+          {(() => {
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            const recent = history.filter(entry => new Date(entry.created_at).getTime() >= cutoff);
+            if (recent.length === 0) return (
+              <p className="text-slate-600 text-xs italic py-2">No activity in the last 24 hours.</p>
+            );
+            return recent.map((entry) => (
               <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
                 <div className="flex items-center gap-3">
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -266,8 +269,8 @@ const App: React.FC = () => {
                 </div>
                 <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
               </div>
-            ))
-          )}
+            ));
+          })()}
         </div>
       </section>
 
