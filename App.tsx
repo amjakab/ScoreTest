@@ -7,6 +7,62 @@ import { HistoryEntry, NewsSummary } from './types.ts';
 const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
+const BASE_DELTA = 5;
+
+const RATE_MIN = 0.1;
+const RATE_NEUTRAL = 2;
+const RATE_MAX = 4;
+
+const seededUnitValue = (seed: string): number => {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) / 4294967295;
+};
+
+const interpolate = (value: number, x1: number, y1: number, x2: number, y2: number): number => {
+  const ratio = (value - x1) / (x2 - x1);
+  return y1 + (y2 - y1) * ratio;
+};
+
+const getVoteDeltasForRate = (rate: number) => {
+  const clampedRate = Math.min(RATE_MAX, Math.max(RATE_MIN, rate));
+
+  const upDelta = clampedRate <= RATE_NEUTRAL
+    ? interpolate(clampedRate, RATE_MIN, BASE_DELTA * 2, RATE_NEUTRAL, BASE_DELTA)
+    : interpolate(clampedRate, RATE_NEUTRAL, BASE_DELTA, RATE_MAX, 0);
+
+  const downMagnitude = 10 - upDelta;
+
+  return {
+    upDelta,
+    downMagnitude
+  };
+};
+
+const formatPoints = (value: number): string => {
+  if (Number.isInteger(value)) return value.toString();
+  return value.toFixed(1);
+};
+
+const todayKey = (): string => new Date().toISOString().split('T')[0];
+
+const rateFromSeededValue = (unitValue: number): number => {
+  const c = (RATE_NEUTRAL - RATE_MIN) / (RATE_MAX - RATE_MIN);
+  const rate = unitValue < c
+    ? RATE_MIN + Math.sqrt(unitValue * (RATE_MAX - RATE_MIN) * (RATE_NEUTRAL - RATE_MIN))
+    : RATE_MAX - Math.sqrt((1 - unitValue) * (RATE_MAX - RATE_MIN) * (RATE_MAX - RATE_NEUTRAL));
+
+  return parseFloat(rate.toFixed(2));
+};
+
+const getDailyFederalFundsRate = (): number => {
+  const seed = `brady-fed-rate-${todayKey()}`;
+  return rateFromSeededValue(seededUnitValue(seed));
+};
 
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
@@ -17,6 +73,7 @@ const App: React.FC = () => {
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [news, setNews] = useState<NewsSummary[]>([]);
+  const [federalFundsRate, setFederalFundsRate] = useState<number>(() => getDailyFederalFundsRate());
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -69,6 +126,16 @@ const App: React.FC = () => {
     }
   }, [timeLeft, getRemainingTime]);
 
+  // Refresh federal funds rate once per new day if tab remains open
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nextRate = getDailyFederalFundsRate();
+      setFederalFundsRate(prev => (prev === nextRate ? prev : nextRate));
+    }, 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Pulse Effect on score change
   useEffect(() => {
     if (score !== null && prevScoreRef.current !== null && score !== prevScoreRef.current) {
@@ -80,11 +147,16 @@ const App: React.FC = () => {
     prevScoreRef.current = score;
   }, [score]);
 
-  const handleVote = useCallback(async (delta: number) => {
+  const handleVote = useCallback(async (direction: 'up' | 'down') => {
     if (timeLeft > 0 || isUpdating) return;
+
+    const currentRate = federalFundsRate;
+    const { upDelta, downMagnitude } = getVoteDeltasForRate(currentRate);
+    const adjustedDelta = direction === 'up' ? upDelta : -downMagnitude;
+
     setIsUpdating(true);
     try {
-      await scoreService.updateScore(delta);
+      await scoreService.updateScore(adjustedDelta);
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
     } catch (err) {
@@ -93,7 +165,12 @@ const App: React.FC = () => {
     } finally {
       setIsUpdating(false);
     }
-  }, [timeLeft, isUpdating]);
+  }, [timeLeft, isUpdating, federalFundsRate]);
+
+  const { upDelta, downMagnitude } = getVoteDeltasForRate(federalFundsRate);
+  const dailyPointsTotal = history
+    .filter((entry) => new Date(entry.created_at).toDateString() === new Date().toDateString())
+    .reduce((sum, entry) => sum + entry.delta, 0);
 
   const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -130,20 +207,33 @@ const App: React.FC = () => {
         </div>
         
         <div className={`text-9xl font-bangers transition-all duration-500 ${score !== null && score >= 0 ? 'text-emerald-400' : 'text-rose-500'} ${isUpdating ? 'opacity-50' : 'opacity-100'}`}>
-          {score ?? 0}
+          {formatPoints(score ?? 0)}
         </div>
         
         <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
         </div>
+
+        <div className="mt-5 bg-slate-800/80 rounded-xl px-4 py-3 border border-slate-700 text-center w-full max-w-xs">
+          <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Brady Point Federal Funds Rate</p>
+          <p className="text-2xl text-amber-300 font-bold mt-1">{federalFundsRate.toFixed(2)}%</p>
+          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost positives, higher rates boost negatives. Same global daily rate for everyone.</p>
+        </div>
+
+        <div className="mt-3 bg-slate-800/60 rounded-xl px-4 py-2 border border-slate-700 text-center w-full max-w-xs">
+          <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Daily Points Total</p>
+          <p className={`text-xl font-bold mt-1 ${dailyPointsTotal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {dailyPointsTotal >= 0 ? '+' : ''}{formatPoints(dailyPointsTotal)}
+          </p>
+        </div>
       </section>
 
       <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
         <CooldownButton 
-          label="POINT UP (+5)" 
+          label={`POINT UP (+${formatPoints(upDelta)})`} 
           variant="up" 
-          onClick={() => handleVote(5)}
+          onClick={() => handleVote('up')}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
@@ -151,9 +241,9 @@ const App: React.FC = () => {
         />
         
         <CooldownButton 
-          label="POINT DOWN (-5)" 
+          label={`POINT DOWN (-${formatPoints(downMagnitude)})`} 
           variant="down" 
-          onClick={() => handleVote(-5)}
+          onClick={() => handleVote('down')}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
@@ -182,9 +272,9 @@ const App: React.FC = () => {
               <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
                 <div className="flex items-center gap-3">
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
+                    {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${formatPoints(entry.delta)}` : `-${formatPoints(Math.abs(entry.delta))}`}
                   </span>
-                  <span className="text-slate-400">Score is now {entry.new_score}</span>
+                  <span className="text-slate-400">Score is now {formatPoints(entry.new_score)}</span>
                 </div>
                 <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
               </div>
