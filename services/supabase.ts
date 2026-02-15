@@ -10,6 +10,21 @@ export const supabase: SupabaseClient | null = (supabaseUrl && supabaseAnonKey)
   : null;
 
 const STORAGE_KEY = 'brady_score_persistent';
+const COOLDOWN_MS = 5 * 60 * 1000;
+
+let cachedIp: string | null = null;
+
+async function getClientIp(): Promise<string | null> {
+  if (cachedIp) return cachedIp;
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    const data = await res.json();
+    cachedIp = data.ip;
+    return cachedIp;
+  } catch {
+    return null;
+  }
+}
 
 export const scoreService = {
   isConfigured(): boolean {
@@ -59,6 +74,25 @@ export const scoreService = {
     } catch (err) {
       console.error('Failed to fetch history:', err);
       return [];
+    }
+  },
+
+  async getTodayChange(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('delta')
+        .gte('created_at', todayStart.toISOString());
+
+      if (error) throw error;
+      return (data || []).reduce((sum, entry) => sum + entry.delta, 0);
+    } catch (err) {
+      console.error('Failed to fetch today change:', err);
+      return 0;
     }
   },
 
@@ -112,6 +146,46 @@ export const scoreService = {
     } catch (error: any) {
       console.error('CRITICAL: Update failed:', error.message);
       throw error;
+    }
+  },
+
+  async checkCooldown(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return 0;
+
+      const { data, error } = await supabase
+        .from('vote_cooldowns')
+        .select('last_voted_at')
+        .eq('ip_address', ip)
+        .single();
+
+      if (error || !data) return 0;
+
+      const elapsed = Date.now() - new Date(data.last_voted_at).getTime();
+      return Math.max(0, COOLDOWN_MS - elapsed);
+    } catch {
+      return 0;
+    }
+  },
+
+  async recordVote(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return;
+
+      const { error } = await supabase
+        .from('vote_cooldowns')
+        .upsert(
+          { ip_address: ip, last_voted_at: new Date().toISOString() },
+          { onConflict: 'ip_address' }
+        );
+
+      if (error) console.error('Failed to record vote cooldown:', error.message);
+    } catch (err) {
+      console.error('Failed to record vote cooldown:', err);
     }
   },
 

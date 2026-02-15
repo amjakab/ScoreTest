@@ -18,26 +18,52 @@ export const ScoreHistoryChart: React.FC<ScoreHistoryChartProps> = ({ history })
     );
   }
 
-  const padding = 40;
+  const paddingLeft = 50;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 40;
   const width = 500;
-  const height = 200;
+  const height = 220;
 
   const minScore = Math.min(...data.map(d => d.new_score));
   const maxScore = Math.max(...data.map(d => d.new_score));
-  const scoreRange = Math.max(maxScore - minScore, 10); // Ensure some vertical scale if scores are flat
-  
-  const yScale = (score: number) => 
-    height - padding - ((score - minScore) / scoreRange) * (height - 2 * padding);
-  
-  const xScale = (index: number) => 
-    padding + (index / (data.length - 1)) * (width - 2 * padding);
+  const scoreRange = Math.max(maxScore - minScore, 10);
+
+  const yScale = (score: number) =>
+    height - paddingBottom - ((score - minScore) / scoreRange) * (height - paddingTop - paddingBottom);
+
+  const xScale = (index: number) =>
+    paddingLeft + (index / (data.length - 1)) * (width - paddingLeft - paddingRight);
+
+  // Y-axis ticks
+  const yTickCount = 4;
+  const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) =>
+    Math.round(minScore + (scoreRange * i) / yTickCount)
+  );
+
+  // X-axis ticks - pick evenly spaced data points for time labels
+  const xTickCount = Math.min(data.length, 5);
+  const xTickStep = Math.max(1, Math.floor((data.length - 1) / (xTickCount - 1)));
+  const xTicks = Array.from({ length: xTickCount }, (_, i) => {
+    const idx = Math.min(i * xTickStep, data.length - 1);
+    return idx;
+  });
+  // Always include last point
+  if (xTicks[xTicks.length - 1] !== data.length - 1) {
+    xTicks[xTicks.length - 1] = data.length - 1;
+  }
+
+  const formatTime = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
 
   const points = data.map((d, i) => `${xScale(i)},${yScale(d.new_score)}`).join(' ');
   
   const areaPoints = [
-    `${xScale(0)},${height - padding}`,
+    `${xScale(0)},${height - paddingBottom}`,
     ...data.map((d, i) => `${xScale(i)},${yScale(d.new_score)}`),
-    `${xScale(data.length - 1)},${height - padding}`
+    `${xScale(data.length - 1)},${height - paddingBottom}`
   ].join(' ');
 
   return (
@@ -75,9 +101,57 @@ export const ScoreHistoryChart: React.FC<ScoreHistoryChartProps> = ({ history })
           </filter>
         </defs>
 
-        {/* Grid Lines */}
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#334155" strokeWidth="1" strokeDasharray="4" />
-        <line x1={padding} y1={padding} x2={width - padding} y2={padding} stroke="#1e293b" strokeWidth="1" />
+        {/* Y-axis ticks and grid lines */}
+        {yTicks.map((tick) => (
+          <g key={`y-${tick}`}>
+            <line
+              x1={paddingLeft}
+              y1={yScale(tick)}
+              x2={width - paddingRight}
+              y2={yScale(tick)}
+              stroke="#1e293b"
+              strokeWidth="1"
+              strokeDasharray="4"
+            />
+            <text
+              x={paddingLeft - 8}
+              y={yScale(tick) + 3}
+              textAnchor="end"
+              fill="#64748b"
+              fontSize="9"
+              fontFamily="monospace"
+            >
+              {tick}
+            </text>
+          </g>
+        ))}
+
+        {/* X-axis ticks */}
+        {xTicks.map((idx) => (
+          <g key={`x-${idx}`}>
+            <line
+              x1={xScale(idx)}
+              y1={height - paddingBottom}
+              x2={xScale(idx)}
+              y2={height - paddingBottom + 4}
+              stroke="#334155"
+              strokeWidth="1"
+            />
+            <text
+              x={xScale(idx)}
+              y={height - paddingBottom + 16}
+              textAnchor="middle"
+              fill="#64748b"
+              fontSize="8"
+              fontFamily="monospace"
+            >
+              {formatTime(data[idx].created_at)}
+            </text>
+          </g>
+        ))}
+
+        {/* Baseline */}
+        <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#334155" strokeWidth="1" />
 
         {/* Area Fill */}
         <polyline
@@ -113,12 +187,8 @@ export const ScoreHistoryChart: React.FC<ScoreHistoryChartProps> = ({ history })
             <title>Score: {d.new_score} ({d.delta > 0 ? '+' : ''}{d.delta})</title>
           </circle>
         ))}
+
       </svg>
-      
-      <div className="flex justify-between mt-2 text-[8px] text-slate-600 uppercase tracking-widest font-bold">
-        <span>Earlier</span>
-        <span>Latest Activity</span>
-      </div>
     </div>
   );
 };
