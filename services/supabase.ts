@@ -10,7 +10,39 @@ export const supabase: SupabaseClient | null = (supabaseUrl && supabaseAnonKey)
   : null;
 
 const STORAGE_KEY = 'brady_score_persistent';
+const RATE_STORAGE_KEY = 'brady_federal_rate_cache';
 const COOLDOWN_MS = 5 * 60 * 1000;
+
+// Federal Funds Rate probability distribution
+const RATE_PROBABILITIES = [
+  { rate: 0.1, probability: 0.10 },
+  { rate: 1.0, probability: 0.15 },
+  { rate: 2.0, probability: 0.50 },
+  { rate: 3.0, probability: 0.15 },
+  { rate: 4.0, probability: 0.10 },
+];
+
+// Generate random Federal Funds Rate based on probability distribution
+const generateRandomRate = (): number => {
+  const random = Math.random();
+  let cumulative = 0;
+  for (const { rate, probability } of RATE_PROBABILITIES) {
+    cumulative += probability;
+    if (random < cumulative) return rate;
+  }
+  return 2.0; // Default to neutral rate
+};
+
+// Check if we need to generate a new rate (daily)
+const shouldUpdateRate = (lastUpdated: string | null): boolean => {
+  if (!lastUpdated) return true;
+
+  const lastDate = new Date(lastUpdated);
+  const currentDate = new Date();
+
+  // Compare dates (ignoring time)
+  return lastDate.toDateString() !== currentDate.toDateString();
+};
 
 let cachedIp: string | null = null;
 
@@ -205,7 +237,71 @@ export const scoreService = {
     }
   },
 
-  subscribeToChanges(onScore: (newScore: number) => void, onHistory: (entry: HistoryEntry) => void) {
+  async getFederalFundsRate(): Promise<{ rate: number; lastUpdated: string }> {
+    if (!supabase) {
+      const cached = localStorage.getItem(RATE_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return { rate: parsed.rate || 2.0, lastUpdated: parsed.lastUpdated || new Date().toISOString() };
+      }
+      return { rate: 2.0, lastUpdated: new Date().toISOString() };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('federal_funds_rate')
+        .select('rate, updated_at')
+        .eq('id', 1)
+        .single();
+
+      if (error) {
+        // If row doesn't exist, create it with a new random rate
+        if (error.code === 'PGRST116') {
+          const newRate = generateRandomRate();
+          const now = new Date().toISOString();
+          await supabase.from('federal_funds_rate').insert([{
+            id: 1,
+            rate: newRate,
+            updated_at: now
+          }]);
+          return { rate: newRate, lastUpdated: now };
+        }
+        throw error;
+      }
+
+      // Check if we need to update the rate (daily check)
+      if (shouldUpdateRate(data.updated_at)) {
+        const newRate = generateRandomRate();
+        const now = new Date().toISOString();
+        await supabase
+          .from('federal_funds_rate')
+          .update({ rate: newRate, updated_at: now })
+          .eq('id', 1);
+
+        const rateData = { rate: newRate, lastUpdated: now };
+        localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(rateData));
+        return rateData;
+      }
+
+      const rateData = { rate: data.rate, lastUpdated: data.updated_at };
+      localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(rateData));
+      return rateData;
+    } catch (error) {
+      console.warn('Supabase rate fetch failed:', error);
+      const cached = localStorage.getItem(RATE_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return { rate: parsed.rate || 2.0, lastUpdated: parsed.lastUpdated || new Date().toISOString() };
+      }
+      return { rate: 2.0, lastUpdated: new Date().toISOString() };
+    }
+  },
+
+  subscribeToChanges(
+    onScore: (newScore: number) => void,
+    onHistory: (entry: HistoryEntry) => void,
+    onRateChange?: (rate: number) => void
+  ) {
     if (!supabase) return () => {};
 
     const channel = supabase
@@ -225,6 +321,15 @@ export const scoreService = {
         (payload) => {
           if (payload.new) {
             onHistory(payload.new as HistoryEntry);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'federal_funds_rate', filter: 'id=eq.1' },
+        (payload) => {
+          if (payload.new && typeof payload.new.rate === 'number' && onRateChange) {
+            onRateChange(payload.new.rate);
           }
         }
       )

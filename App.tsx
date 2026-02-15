@@ -8,6 +8,35 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
 
+// Calculate multipliers based on Federal Funds Rate
+const calculateMultipliers = (rate: number) => {
+  let posMultiplier: number;
+  let negMultiplier: number;
+
+  if (rate <= 2) {
+    // From 0.1 to 2: positive goes from 0.5 to 1, negative goes from 2 to 1
+    posMultiplier = 0.5 + (rate - 0.1) * (0.5 / 1.9);
+    negMultiplier = 2 - (rate - 0.1) * (1 / 1.9);
+  } else {
+    // From 2 to 4: positive goes from 1 to 2, negative goes from 1 to 0.5
+    posMultiplier = 1 + (rate - 2) * (1 / 2);
+    negMultiplier = 1 - (rate - 2) * (0.5 / 2);
+  }
+
+  return { posMultiplier, negMultiplier };
+};
+
+// Calculate normalized point values that always sum to 10
+const calculatePointValues = (rate: number) => {
+  const { posMultiplier, negMultiplier } = calculateMultipliers(rate);
+  const total = posMultiplier + negMultiplier;
+
+  return {
+    positivePoints: Math.round((10 * posMultiplier / total) * 10) / 10, // Round to 1 decimal
+    negativePoints: Math.round((10 * negMultiplier / total) * 10) / 10,
+  };
+};
+
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -21,7 +50,8 @@ const App: React.FC = () => {
   const [allHistory, setAllHistory] = useState<HistoryEntry[] | null>(null);
   const [loadingAllHistory, setLoadingAllHistory] = useState(false);
   const [dailyChange, setDailyChange] = useState<number>(0);
-  
+  const [federalFundsRate, setFederalFundsRate] = useState<number>(2.0);
+
   const prevScoreRef = useRef<number | null>(null);
 
   const getRemainingTime = useCallback(() => {
@@ -35,16 +65,18 @@ const App: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [currentScore, recentHistory, newsSummaries, todayChange] = await Promise.all([
+        const [currentScore, recentHistory, newsSummaries, todayChange, rateData] = await Promise.all([
           scoreService.getScore(),
           scoreService.getHistory(HISTORY_LIMIT),
           scoreService.getNewsSummaries(),
-          scoreService.getTodayChange()
+          scoreService.getTodayChange(),
+          scoreService.getFederalFundsRate()
         ]);
         setScore(currentScore);
         setHistory(recentHistory);
         setNews(newsSummaries);
         setDailyChange(todayChange);
+        setFederalFundsRate(rateData.rate);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
 
@@ -66,7 +98,8 @@ const App: React.FC = () => {
         if (new Date(newEntry.created_at).toDateString() === new Date().toDateString()) {
           setDailyChange(prev => prev + newEntry.delta);
         }
-      }
+      },
+      (newRate) => setFederalFundsRate(newRate)
     );
 
     return () => unsubscribe();
@@ -95,7 +128,7 @@ const App: React.FC = () => {
     prevScoreRef.current = score;
   }, [score]);
 
-  const handleVote = useCallback(async (delta: number) => {
+  const handleVote = useCallback(async (isPositive: boolean) => {
     if (timeLeft > 0 || isUpdating) return;
     setIsUpdating(true);
     try {
@@ -105,6 +138,10 @@ const App: React.FC = () => {
         setTimeLeft(serverCooldown);
         return;
       }
+
+      // Calculate adjusted delta based on Federal Funds Rate
+      const { positivePoints, negativePoints } = calculatePointValues(federalFundsRate);
+      const delta = isPositive ? positivePoints : -negativePoints;
 
       await scoreService.updateScore(delta);
       await scoreService.recordVote();
@@ -116,7 +153,7 @@ const App: React.FC = () => {
     } finally {
       setIsUpdating(false);
     }
-  }, [timeLeft, isUpdating]);
+  }, [timeLeft, isUpdating, federalFundsRate]);
 
   const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -185,6 +222,37 @@ const App: React.FC = () => {
         </div>
       </section>
 
+      {/* Federal Funds Rate Display */}
+      <section className="w-full max-w-md bg-gradient-to-r from-blue-900/30 to-purple-900/30 backdrop-blur-md rounded-2xl p-6 border border-blue-700/50 shadow-xl mb-8">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-blue-300 font-bold uppercase tracking-widest text-xs flex items-center gap-2">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+            Brady Point Federal Funds Rate
+          </h3>
+          <span className="text-2xl font-bangers text-blue-400">{federalFundsRate.toFixed(1)}%</span>
+        </div>
+        <div className="text-slate-400 text-xs space-y-1">
+          <p>
+            {federalFundsRate === 2.0 && "Neutral market conditions. Standard point values apply."}
+            {federalFundsRate > 2.0 && federalFundsRate < 4.0 && "Market favors positive momentum. Upvotes strengthened, downvotes weakened."}
+            {federalFundsRate === 4.0 && "Maximum bullish conditions! Upvotes at 2x strength, downvotes halved."}
+            {federalFundsRate < 2.0 && federalFundsRate > 0.1 && "Market favors corrections. Downvotes strengthened, upvotes weakened."}
+            {federalFundsRate === 0.1 && "Maximum bearish conditions! Downvotes at 2x strength, upvotes halved."}
+          </p>
+          <div className="mt-3 pt-3 border-t border-blue-800/50">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-emerald-400">Up: +{calculatePointValues(federalFundsRate).positivePoints}</span>
+              <span className="text-slate-500">|</span>
+              <span className="text-rose-400">Down: -{calculatePointValues(federalFundsRate).negativePoints}</span>
+              <span className="text-slate-500">|</span>
+              <span className="text-blue-400">Sum: {(calculatePointValues(federalFundsRate).positivePoints + calculatePointValues(federalFundsRate).negativePoints).toFixed(1)}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {timeLeft > 0 && (
         <div className="w-full max-w-md mb-6 bg-slate-900/50 rounded-xl px-5 py-3 border border-slate-700 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -198,20 +266,20 @@ const App: React.FC = () => {
       )}
 
       <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
-        <CooldownButton 
-          label="POINT UP (+5)" 
-          variant="up" 
-          onClick={() => handleVote(5)}
+        <CooldownButton
+          label={`POINT UP (+${calculatePointValues(federalFundsRate).positivePoints})`}
+          variant="up"
+          onClick={() => handleVote(true)}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
           isLoading={isUpdating}
         />
-        
-        <CooldownButton 
-          label="POINT DOWN (-5)" 
-          variant="down" 
-          onClick={() => handleVote(-5)}
+
+        <CooldownButton
+          label={`POINT DOWN (-${calculatePointValues(federalFundsRate).negativePoints})`}
+          variant="down"
+          onClick={() => handleVote(false)}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
