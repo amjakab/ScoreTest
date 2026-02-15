@@ -8,6 +8,8 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
 const BASE_DELTA = 5;
+const FED_RATE_KEY = 'brady_federal_funds_rate';
+const FED_RATE_DAY_KEY = 'brady_federal_funds_rate_day';
 
 const RATE_MIN = 0.1;
 const RATE_NEUTRAL = 2;
@@ -33,12 +35,12 @@ const getModifiersForRate = (rate: number) => {
   const clampedRate = Math.min(RATE_MAX, Math.max(RATE_MIN, rate));
 
   const positiveMultiplier = clampedRate <= RATE_NEUTRAL
-    ? interpolate(clampedRate, RATE_MIN, 0.5, RATE_NEUTRAL, 1)
-    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 2);
-
-  const negativeMultiplier = clampedRate <= RATE_NEUTRAL
     ? interpolate(clampedRate, RATE_MIN, 2, RATE_NEUTRAL, 1)
     : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 0.5);
+
+  const negativeMultiplier = clampedRate <= RATE_NEUTRAL
+    ? interpolate(clampedRate, RATE_MIN, 0.5, RATE_NEUTRAL, 1)
+    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 2);
 
   return {
     positiveMultiplier,
@@ -51,6 +53,26 @@ const formatPoints = (value: number): string => {
   return value.toFixed(1);
 };
 
+const todayKey = (): string => new Date().toISOString().split('T')[0];
+
+const getDailyFederalFundsRate = (): number => {
+  const savedDay = localStorage.getItem(FED_RATE_DAY_KEY);
+  const savedRate = localStorage.getItem(FED_RATE_KEY);
+  const today = todayKey();
+
+  if (savedDay === today && savedRate !== null) {
+    const parsed = parseFloat(savedRate);
+    if (!Number.isNaN(parsed)) {
+      return Math.min(RATE_MAX, Math.max(RATE_MIN, parsed));
+    }
+  }
+
+  const nextRate = pickFederalFundsRate();
+  localStorage.setItem(FED_RATE_DAY_KEY, today);
+  localStorage.setItem(FED_RATE_KEY, nextRate.toString());
+  return nextRate;
+};
+
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -60,7 +82,7 @@ const App: React.FC = () => {
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [news, setNews] = useState<NewsSummary[]>([]);
-  const [federalFundsRate, setFederalFundsRate] = useState<number>(() => pickFederalFundsRate());
+  const [federalFundsRate, setFederalFundsRate] = useState<number>(() => getDailyFederalFundsRate());
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -113,6 +135,16 @@ const App: React.FC = () => {
     }
   }, [timeLeft, getRemainingTime]);
 
+  // Refresh federal funds rate once per new day if tab remains open
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nextRate = getDailyFederalFundsRate();
+      setFederalFundsRate(prev => (prev === nextRate ? prev : nextRate));
+    }, 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Pulse Effect on score change
   useEffect(() => {
     if (score !== null && prevScoreRef.current !== null && score !== prevScoreRef.current) {
@@ -138,7 +170,6 @@ const App: React.FC = () => {
       await scoreService.updateScore(adjustedDelta);
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
-      setFederalFundsRate(pickFederalFundsRate());
     } catch (err) {
       console.error("Vote failed:", err);
       setError("Sync failed");
@@ -150,6 +181,9 @@ const App: React.FC = () => {
   const { positiveMultiplier, negativeMultiplier } = getModifiersForRate(federalFundsRate);
   const upDelta = BASE_DELTA * positiveMultiplier;
   const downDelta = BASE_DELTA * negativeMultiplier;
+  const dailyPointsTotal = history
+    .filter((entry) => new Date(entry.created_at).toDateString() === new Date().toDateString())
+    .reduce((sum, entry) => sum + entry.delta, 0);
 
   const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -197,7 +231,14 @@ const App: React.FC = () => {
         <div className="mt-5 bg-slate-800/80 rounded-xl px-4 py-3 border border-slate-700 text-center w-full max-w-xs">
           <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Brady Point Federal Funds Rate</p>
           <p className="text-2xl text-amber-300 font-bold mt-1">{federalFundsRate.toFixed(2)}%</p>
-          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost negatives, higher rates boost positives.</p>
+          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost positives, higher rates boost negatives. Updates daily.</p>
+        </div>
+
+        <div className="mt-3 bg-slate-800/60 rounded-xl px-4 py-2 border border-slate-700 text-center w-full max-w-xs">
+          <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Daily Points Total</p>
+          <p className={`text-xl font-bold mt-1 ${dailyPointsTotal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {dailyPointsTotal >= 0 ? '+' : ''}{formatPoints(dailyPointsTotal)}
+          </p>
         </div>
       </section>
 
