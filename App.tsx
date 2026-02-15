@@ -8,22 +8,19 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
 const BASE_DELTA = 5;
-const FED_RATE_KEY = 'brady_federal_funds_rate';
-const FED_RATE_DAY_KEY = 'brady_federal_funds_rate_day';
 
 const RATE_MIN = 0.1;
 const RATE_NEUTRAL = 2;
 const RATE_MAX = 4;
 
-const pickFederalFundsRate = (): number => {
-  const random = Math.random();
-  const c = (RATE_NEUTRAL - RATE_MIN) / (RATE_MAX - RATE_MIN);
+const seededUnitValue = (seed: string): number => {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
 
-  const rate = random < c
-    ? RATE_MIN + Math.sqrt(random * (RATE_MAX - RATE_MIN) * (RATE_NEUTRAL - RATE_MIN))
-    : RATE_MAX - Math.sqrt((1 - random) * (RATE_MAX - RATE_MIN) * (RATE_MAX - RATE_NEUTRAL));
-
-  return parseFloat(rate.toFixed(2));
+  return (hash >>> 0) / 4294967295;
 };
 
 const interpolate = (value: number, x1: number, y1: number, x2: number, y2: number): number => {
@@ -31,20 +28,18 @@ const interpolate = (value: number, x1: number, y1: number, x2: number, y2: numb
   return y1 + (y2 - y1) * ratio;
 };
 
-const getModifiersForRate = (rate: number) => {
+const getVoteDeltasForRate = (rate: number) => {
   const clampedRate = Math.min(RATE_MAX, Math.max(RATE_MIN, rate));
 
-  const positiveMultiplier = clampedRate <= RATE_NEUTRAL
-    ? interpolate(clampedRate, RATE_MIN, 2, RATE_NEUTRAL, 1)
-    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 0.5);
+  const upDelta = clampedRate <= RATE_NEUTRAL
+    ? interpolate(clampedRate, RATE_MIN, BASE_DELTA * 2, RATE_NEUTRAL, BASE_DELTA)
+    : interpolate(clampedRate, RATE_NEUTRAL, BASE_DELTA, RATE_MAX, 0);
 
-  const negativeMultiplier = clampedRate <= RATE_NEUTRAL
-    ? interpolate(clampedRate, RATE_MIN, 0.5, RATE_NEUTRAL, 1)
-    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 2);
+  const downMagnitude = 10 - upDelta;
 
   return {
-    positiveMultiplier,
-    negativeMultiplier
+    upDelta,
+    downMagnitude
   };
 };
 
@@ -55,22 +50,18 @@ const formatPoints = (value: number): string => {
 
 const todayKey = (): string => new Date().toISOString().split('T')[0];
 
+const rateFromSeededValue = (unitValue: number): number => {
+  const c = (RATE_NEUTRAL - RATE_MIN) / (RATE_MAX - RATE_MIN);
+  const rate = unitValue < c
+    ? RATE_MIN + Math.sqrt(unitValue * (RATE_MAX - RATE_MIN) * (RATE_NEUTRAL - RATE_MIN))
+    : RATE_MAX - Math.sqrt((1 - unitValue) * (RATE_MAX - RATE_MIN) * (RATE_MAX - RATE_NEUTRAL));
+
+  return parseFloat(rate.toFixed(2));
+};
+
 const getDailyFederalFundsRate = (): number => {
-  const savedDay = localStorage.getItem(FED_RATE_DAY_KEY);
-  const savedRate = localStorage.getItem(FED_RATE_KEY);
-  const today = todayKey();
-
-  if (savedDay === today && savedRate !== null) {
-    const parsed = parseFloat(savedRate);
-    if (!Number.isNaN(parsed)) {
-      return Math.min(RATE_MAX, Math.max(RATE_MIN, parsed));
-    }
-  }
-
-  const nextRate = pickFederalFundsRate();
-  localStorage.setItem(FED_RATE_DAY_KEY, today);
-  localStorage.setItem(FED_RATE_KEY, nextRate.toString());
-  return nextRate;
+  const seed = `brady-fed-rate-${todayKey()}`;
+  return rateFromSeededValue(seededUnitValue(seed));
 };
 
 const App: React.FC = () => {
@@ -160,10 +151,8 @@ const App: React.FC = () => {
     if (timeLeft > 0 || isUpdating) return;
 
     const currentRate = federalFundsRate;
-    const { positiveMultiplier, negativeMultiplier } = getModifiersForRate(currentRate);
-    const adjustedDelta = direction === 'up'
-      ? BASE_DELTA * positiveMultiplier
-      : -(BASE_DELTA * negativeMultiplier);
+    const { upDelta, downMagnitude } = getVoteDeltasForRate(currentRate);
+    const adjustedDelta = direction === 'up' ? upDelta : -downMagnitude;
 
     setIsUpdating(true);
     try {
@@ -178,9 +167,7 @@ const App: React.FC = () => {
     }
   }, [timeLeft, isUpdating, federalFundsRate]);
 
-  const { positiveMultiplier, negativeMultiplier } = getModifiersForRate(federalFundsRate);
-  const upDelta = BASE_DELTA * positiveMultiplier;
-  const downDelta = BASE_DELTA * negativeMultiplier;
+  const { upDelta, downMagnitude } = getVoteDeltasForRate(federalFundsRate);
   const dailyPointsTotal = history
     .filter((entry) => new Date(entry.created_at).toDateString() === new Date().toDateString())
     .reduce((sum, entry) => sum + entry.delta, 0);
@@ -231,7 +218,7 @@ const App: React.FC = () => {
         <div className="mt-5 bg-slate-800/80 rounded-xl px-4 py-3 border border-slate-700 text-center w-full max-w-xs">
           <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Brady Point Federal Funds Rate</p>
           <p className="text-2xl text-amber-300 font-bold mt-1">{federalFundsRate.toFixed(2)}%</p>
-          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost positives, higher rates boost negatives. Updates daily.</p>
+          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost positives, higher rates boost negatives. Same global daily rate for everyone.</p>
         </div>
 
         <div className="mt-3 bg-slate-800/60 rounded-xl px-4 py-2 border border-slate-700 text-center w-full max-w-xs">
@@ -254,7 +241,7 @@ const App: React.FC = () => {
         />
         
         <CooldownButton 
-          label={`POINT DOWN (-${formatPoints(downDelta)})`} 
+          label={`POINT DOWN (-${formatPoints(downMagnitude)})`} 
           variant="down" 
           onClick={() => handleVote('down')}
           timeLeft={timeLeft}
