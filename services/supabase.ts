@@ -19,7 +19,7 @@ export const scoreService = {
   async getScore(): Promise<number> {
     if (!supabase) {
       const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? parseInt(saved, 10) : 0;
+      return saved ? parseFloat(saved) : 0;
     }
 
     try {
@@ -41,7 +41,7 @@ export const scoreService = {
     } catch (error) {
       console.warn('Supabase fetch failed:', error);
       const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? parseInt(saved, 10) : 0;
+      return saved ? parseFloat(saved) : 0;
     }
   },
 

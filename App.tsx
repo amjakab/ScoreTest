@@ -7,6 +7,49 @@ import { HistoryEntry, NewsSummary } from './types.ts';
 const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
+const BASE_DELTA = 5;
+
+const RATE_MIN = 0.1;
+const RATE_NEUTRAL = 2;
+const RATE_MAX = 4;
+
+const pickFederalFundsRate = (): number => {
+  const random = Math.random();
+  const c = (RATE_NEUTRAL - RATE_MIN) / (RATE_MAX - RATE_MIN);
+
+  const rate = random < c
+    ? RATE_MIN + Math.sqrt(random * (RATE_MAX - RATE_MIN) * (RATE_NEUTRAL - RATE_MIN))
+    : RATE_MAX - Math.sqrt((1 - random) * (RATE_MAX - RATE_MIN) * (RATE_MAX - RATE_NEUTRAL));
+
+  return parseFloat(rate.toFixed(2));
+};
+
+const interpolate = (value: number, x1: number, y1: number, x2: number, y2: number): number => {
+  const ratio = (value - x1) / (x2 - x1);
+  return y1 + (y2 - y1) * ratio;
+};
+
+const getModifiersForRate = (rate: number) => {
+  const clampedRate = Math.min(RATE_MAX, Math.max(RATE_MIN, rate));
+
+  const positiveMultiplier = clampedRate <= RATE_NEUTRAL
+    ? interpolate(clampedRate, RATE_MIN, 0.5, RATE_NEUTRAL, 1)
+    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 2);
+
+  const negativeMultiplier = clampedRate <= RATE_NEUTRAL
+    ? interpolate(clampedRate, RATE_MIN, 2, RATE_NEUTRAL, 1)
+    : interpolate(clampedRate, RATE_NEUTRAL, 1, RATE_MAX, 0.5);
+
+  return {
+    positiveMultiplier,
+    negativeMultiplier
+  };
+};
+
+const formatPoints = (value: number): string => {
+  if (Number.isInteger(value)) return value.toString();
+  return value.toFixed(1);
+};
 
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
@@ -17,6 +60,7 @@ const App: React.FC = () => {
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [news, setNews] = useState<NewsSummary[]>([]);
+  const [federalFundsRate, setFederalFundsRate] = useState<number>(() => pickFederalFundsRate());
   
   const prevScoreRef = useRef<number | null>(null);
 
@@ -80,20 +124,32 @@ const App: React.FC = () => {
     prevScoreRef.current = score;
   }, [score]);
 
-  const handleVote = useCallback(async (delta: number) => {
+  const handleVote = useCallback(async (direction: 'up' | 'down') => {
     if (timeLeft > 0 || isUpdating) return;
+
+    const currentRate = federalFundsRate;
+    const { positiveMultiplier, negativeMultiplier } = getModifiersForRate(currentRate);
+    const adjustedDelta = direction === 'up'
+      ? BASE_DELTA * positiveMultiplier
+      : -(BASE_DELTA * negativeMultiplier);
+
     setIsUpdating(true);
     try {
-      await scoreService.updateScore(delta);
+      await scoreService.updateScore(adjustedDelta);
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
+      setFederalFundsRate(pickFederalFundsRate());
     } catch (err) {
       console.error("Vote failed:", err);
       setError("Sync failed");
     } finally {
       setIsUpdating(false);
     }
-  }, [timeLeft, isUpdating]);
+  }, [timeLeft, isUpdating, federalFundsRate]);
+
+  const { positiveMultiplier, negativeMultiplier } = getModifiersForRate(federalFundsRate);
+  const upDelta = BASE_DELTA * positiveMultiplier;
+  const downDelta = BASE_DELTA * negativeMultiplier;
 
   const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -130,20 +186,26 @@ const App: React.FC = () => {
         </div>
         
         <div className={`text-9xl font-bangers transition-all duration-500 ${score !== null && score >= 0 ? 'text-emerald-400' : 'text-rose-500'} ${isUpdating ? 'opacity-50' : 'opacity-100'}`}>
-          {score ?? 0}
+          {formatPoints(score ?? 0)}
         </div>
         
         <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
         </div>
+
+        <div className="mt-5 bg-slate-800/80 rounded-xl px-4 py-3 border border-slate-700 text-center w-full max-w-xs">
+          <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Brady Point Federal Funds Rate</p>
+          <p className="text-2xl text-amber-300 font-bold mt-1">{federalFundsRate.toFixed(2)}%</p>
+          <p className="text-[10px] text-slate-500 mt-2">2.00% is neutral. Lower rates boost negatives, higher rates boost positives.</p>
+        </div>
       </section>
 
       <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
         <CooldownButton 
-          label="POINT UP (+5)" 
+          label={`POINT UP (+${formatPoints(upDelta)})`} 
           variant="up" 
-          onClick={() => handleVote(5)}
+          onClick={() => handleVote('up')}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
@@ -151,9 +213,9 @@ const App: React.FC = () => {
         />
         
         <CooldownButton 
-          label="POINT DOWN (-5)" 
+          label={`POINT DOWN (-${formatPoints(downDelta)})`} 
           variant="down" 
-          onClick={() => handleVote(-5)}
+          onClick={() => handleVote('down')}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
           disabledGlobal={isUpdating}
@@ -182,9 +244,9 @@ const App: React.FC = () => {
               <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
                 <div className="flex items-center gap-3">
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
+                    {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${formatPoints(entry.delta)}` : `-${formatPoints(Math.abs(entry.delta))}`}
                   </span>
-                  <span className="text-slate-400">Score is now {entry.new_score}</span>
+                  <span className="text-slate-400">Score is now {formatPoints(entry.new_score)}</span>
                 </div>
                 <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
               </div>
