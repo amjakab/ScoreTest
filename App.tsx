@@ -9,18 +9,19 @@ const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
 
 // Calculate multipliers based on Federal Funds Rate
+// Lower rates = stimulate positive activity (like real economics)
 const calculateMultipliers = (rate: number) => {
   let posMultiplier: number;
   let negMultiplier: number;
 
   if (rate <= 2) {
-    // From 0.1 to 2: positive goes from 0.5 to 1, negative goes from 2 to 1
-    posMultiplier = 0.5 + (rate - 0.1) * (0.5 / 1.9);
-    negMultiplier = 2 - (rate - 0.1) * (1 / 1.9);
+    // From 0.1 to 2: positive goes from 2 to 1, negative goes from 0.5 to 1
+    posMultiplier = 2 - (rate - 0.1) * (1 / 1.9);
+    negMultiplier = 0.5 + (rate - 0.1) * (0.5 / 1.9);
   } else {
-    // From 2 to 4: positive goes from 1 to 2, negative goes from 1 to 0.5
-    posMultiplier = 1 + (rate - 2) * (1 / 2);
-    negMultiplier = 1 - (rate - 2) * (0.5 / 2);
+    // From 2 to 4: positive goes from 1 to 0.5, negative goes from 1 to 2
+    posMultiplier = 1 - (rate - 2) * (0.5 / 2);
+    negMultiplier = 1 + (rate - 2) * (1 / 2);
   }
 
   return { posMultiplier, negMultiplier };
@@ -236,10 +237,10 @@ const App: React.FC = () => {
         <div className="text-slate-400 text-xs space-y-1">
           <p>
             {federalFundsRate === 2.0 && "Neutral market conditions. Standard point values apply."}
-            {federalFundsRate > 2.0 && federalFundsRate < 4.0 && "Market favors positive momentum. Upvotes strengthened, downvotes weakened."}
-            {federalFundsRate === 4.0 && "Maximum bullish conditions! Upvotes at 2x strength, downvotes halved."}
-            {federalFundsRate < 2.0 && federalFundsRate > 0.1 && "Market favors corrections. Downvotes strengthened, upvotes weakened."}
-            {federalFundsRate === 0.1 && "Maximum bearish conditions! Downvotes at 2x strength, upvotes halved."}
+            {federalFundsRate > 2.0 && federalFundsRate < 4.0 && "Rising rates slow growth. Upvotes weakened, downvotes strengthened."}
+            {federalFundsRate === 4.0 && "Maximum restrictive policy! Upvotes halved, downvotes at 2x strength."}
+            {federalFundsRate < 2.0 && federalFundsRate > 0.1 && "Low rates stimulate growth. Upvotes strengthened, downvotes weakened."}
+            {federalFundsRate === 0.1 && "Maximum stimulus! Upvotes at 2x strength, downvotes halved."}
           </p>
           <div className="mt-3 pt-3 border-t border-blue-800/50">
             <div className="flex justify-between text-[10px]">
