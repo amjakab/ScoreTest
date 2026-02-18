@@ -33,8 +33,8 @@ const calculatePointValues = (rate: number) => {
   const total = posMultiplier + negMultiplier;
 
   return {
-    positivePoints: Math.round((10 * posMultiplier / total) * 10) / 10, // Round to 1 decimal
-    negativePoints: Math.round((10 * negMultiplier / total) * 10) / 10,
+    positivePoints: Math.round(10 * posMultiplier / total),
+    negativePoints: Math.round(10 * negMultiplier / total),
   };
 };
 
