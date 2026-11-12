@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { readMarketSnapshot, shouldFetchMarket } from './market.mjs';
+import { isSessionActive, marketSession, marketTime, readMarketSnapshot, shouldFetchMarket } from './market.mjs';
 
 const encoder = new TextEncoder();
 
@@ -17,20 +17,35 @@ Deno.serve(async (request) => {
   if (!isAuthorized(request)) return new Response(null, { status: 401 });
   if (!shouldFetchMarket(new Date())) return new Response(null, { status: 204 });
 
-  const marketKey = Deno.env.get('MASSIVE_API_KEY');
+  const alpacaKeyId = Deno.env.get('ALPACA_API_KEY_ID');
+  const alpacaSecret = Deno.env.get('ALPACA_API_SECRET_KEY');
   const projectUrl = Deno.env.get('SUPABASE_URL');
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!marketKey || !projectUrl || !serviceKey) {
+  if (!alpacaKeyId || !alpacaSecret || !projectUrl || !serviceKey) {
     return Response.json({ error: 'Market worker is missing configuration.' }, { status: 500 });
   }
 
   try {
-    const quote = await fetch('https://api.massive.com/v2/snapshot/locale/us/markets/stocks/tickers/JETS', {
-      headers: { Authorization: `Bearer ${marketKey}` },
-      signal: AbortSignal.timeout(8_000),
+    const headers = {
+      'APCA-API-KEY-ID': alpacaKeyId,
+      'APCA-API-SECRET-KEY': alpacaSecret,
+    };
+    const now = new Date();
+    const { date } = marketTime(now);
+    const calendar = await fetch(`https://paper-api.alpaca.markets/v2/calendar?start=${date}&end=${date}`, {
+      headers,
+      signal: AbortSignal.timeout(5_000),
     });
-    if (!quote.ok) throw new Error(`Market feed returned HTTP ${quote.status}.`);
-    const snapshot = readMarketSnapshot(await quote.json(), new Date());
+    if (!calendar.ok) throw new Error(`Alpaca calendar returned HTTP ${calendar.status}.`);
+    const session = marketSession(await calendar.json(), now);
+    if (!session || !isSessionActive(session, now)) return new Response(null, { status: 204 });
+
+    const quote = await fetch('https://data.alpaca.markets/v2/stocks/JETS/snapshot?feed=iex', {
+      headers,
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!quote.ok) throw new Error(`Alpaca snapshot returned HTTP ${quote.status}.`);
+    const snapshot = readMarketSnapshot(await quote.json(), new Date(), session);
     if (!snapshot) return new Response(null, { status: 204 });
 
     const result = await fetch(new URL('/rest/v1/rpc/apply_airline_market_snapshot', projectUrl), {

@@ -9,7 +9,7 @@ const marketClock = new Intl.DateTimeFormat('en-US', {
   hourCycle: 'h23',
 });
 
-function marketTime(date) {
+export function marketTime(date) {
   const fields = Object.fromEntries(marketClock.formatToParts(date).map(({ type, value }) => [type, value]));
   return {
     date: [fields.year, fields.month, fields.day].join('-'),
@@ -24,32 +24,46 @@ export function shouldFetchMarket(now) {
   return weekday !== 'Sat' && weekday !== 'Sun' && minuteOfDay >= 570 && minuteOfDay <= 962;
 }
 
-export function readMarketSnapshot(payload, now) {
-  const ticker = payload?.ticker;
-  if (payload?.status !== 'OK' || ticker?.ticker !== 'JETS') {
-    throw new Error('Market feed did not return JETS.');
-  }
+export function marketSession(calendar, now) {
+  if (!Array.isArray(calendar)) throw new Error('Alpaca returned an invalid market calendar.');
+  const { date } = marketTime(now);
+  const session = calendar.find(day => day.date === date);
+  if (!session) return null;
 
-  // Snapshot updated is in nanoseconds. The minute bar timestamp is in milliseconds.
-  const updatedMs = Math.floor(ticker.updated / 1_000_000);
-  const minuteMs = ticker.min?.t;
-  if (!Number.isSafeInteger(updatedMs) || !Number.isSafeInteger(minuteMs)) return null;
+  const asMinutes = value => {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('Alpaca returned invalid market hours.');
+    const [hour, minute] = value.split(':').map(Number);
+    return hour * 60 + minute;
+  };
+  return { date, open: asMinutes(session.open), close: asMinutes(session.close) };
+}
 
-  const minute = marketTime(new Date(minuteMs));
-  const updated = marketTime(new Date(updatedMs));
-  if (minute.date !== marketTime(now).date || updated.date !== minute.date
-      || minute.minuteOfDay < 570 || now.getTime() - minuteMs > 180_000
-      || updatedMs > now.getTime() + 10_000) return null;
+export function isSessionActive(session, now) {
+  const { date, minuteOfDay } = marketTime(now);
+  return session.date === date && minuteOfDay >= session.open && minuteOfDay <= session.close + 2;
+}
 
-  // The provider's day bar covers regular trading, including on early-close days.
-  const close = ticker.day?.c;
-  const previousClose = ticker.prevDay?.c;
+export function readMarketSnapshot(payload, now, session) {
+  const bar = payload?.minuteBar;
+  const previousBar = payload?.prevDailyBar;
+  const barMs = Date.parse(bar?.t);
+  const previousMs = Date.parse(previousBar?.t);
+  if (!Number.isFinite(barMs) || !Number.isFinite(previousMs)) return null;
+
+  const time = marketTime(new Date(barMs));
+  if (!isSessionActive(session, now) || time.date !== session.date
+      || time.minuteOfDay < session.open || time.minuteOfDay >= session.close
+      || marketTime(new Date(previousMs)).date >= session.date
+      || barMs > now.getTime() || now.getTime() - barMs > 180_000) return null;
+
+  const close = bar.c;
+  const previousClose = previousBar.c;
   if (!Number.isFinite(close) || !Number.isFinite(previousClose) || close <= 0 || previousClose <= 0) {
     return null;
   }
 
   return {
-    p_snapshot_at: new Date(updatedMs).toISOString(),
+    p_snapshot_at: new Date(barMs).toISOString(),
     p_change_percent: Number(((close / previousClose - 1) * 100).toFixed(8)),
   };
 }
