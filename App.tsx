@@ -265,7 +265,10 @@ const App: React.FC = () => {
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
                   </span>
-                  <span className="text-slate-400">Score is now {entry.new_score}</span>
+                  <span className="text-slate-400">
+                    {entry.source === 'airline_market' ? 'Airline market · ' : ''}
+                    Score is now {entry.new_score}
+                  </span>
                 </div>
                 <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
               </div>

@@ -9,6 +9,7 @@ export interface HistoryEntry {
   id: string;
   delta: number;
   new_score: number;
+  source?: string | null;
   created_at: string;
 }
 
