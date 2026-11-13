@@ -8,6 +8,36 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const COOLDOWN_KEY = 'brady_vote_cooldown';
 const HISTORY_LIMIT = 20;
 
+// Calculate multipliers based on Federal Funds Rate
+// Lower rates = stimulate positive activity (like real economics)
+const calculateMultipliers = (rate: number) => {
+  let posMultiplier: number;
+  let negMultiplier: number;
+
+  if (rate <= 2) {
+    // From 0.1 to 2: positive goes from 2 to 1, negative goes from 0.5 to 1
+    posMultiplier = 2 - (rate - 0.1) * (1 / 1.9);
+    negMultiplier = 0.5 + (rate - 0.1) * (0.5 / 1.9);
+  } else {
+    // From 2 to 4: positive goes from 1 to 0.5, negative goes from 1 to 2
+    posMultiplier = 1 - (rate - 2) * (0.5 / 2);
+    negMultiplier = 1 + (rate - 2) * (1 / 2);
+  }
+
+  return { posMultiplier, negMultiplier };
+};
+
+// Calculate normalized point values that always sum to 10
+const calculatePointValues = (rate: number) => {
+  const { posMultiplier, negMultiplier } = calculateMultipliers(rate);
+  const total = posMultiplier + negMultiplier;
+
+  return {
+    positivePoints: Math.round(10 * posMultiplier / total),
+    negativePoints: Math.round(10 * negMultiplier / total),
+  };
+};
+
 const App: React.FC = () => {
   const [score, setScore] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -17,8 +47,15 @@ const App: React.FC = () => {
   const [isCloud, setIsCloud] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [news, setNews] = useState<NewsSummary[]>([]);
+  const [showAllTime, setShowAllTime] = useState(false);
+  const [allHistory, setAllHistory] = useState<HistoryEntry[] | null>(null);
+  const [loadingAllHistory, setLoadingAllHistory] = useState(false);
+  const [federalFundsRate, setFederalFundsRate] = useState<number | null>(null);
+  const { positivePoints, negativePoints } = calculatePointValues(federalFundsRate ?? 2);
+  const [dailyChange, setDailyChange] = useState<number>(0);
   
   const prevScoreRef = useRef<number | null>(null);
+  const realtimeScoreVersion = useRef(0);
 
   const getRemainingTime = useCallback(() => {
     const lastVoted = localStorage.getItem(COOLDOWN_KEY);
@@ -31,31 +68,68 @@ const App: React.FC = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        const [currentScore, recentHistory, newsSummaries] = await Promise.all([
+        const [currentScore, recentHistory, newsSummaries, todayChange] = await Promise.all([
           scoreService.getScore(),
           scoreService.getHistory(HISTORY_LIMIT),
-          scoreService.getNewsSummaries()
+          scoreService.getNewsSummaries(),
+          scoreService.getTodayChange()
         ]);
         setScore(currentScore);
         setHistory(recentHistory);
         setNews(newsSummaries);
+        setDailyChange(todayChange);
         prevScoreRef.current = currentScore;
         setIsCloud(scoreService.isConfigured());
+
+        // Check server-side cooldown (IP-based) and use whichever is longer
+        const serverCooldown = await scoreService.checkCooldown();
+        const localCooldown = getRemainingTime();
+        setTimeLeft(Math.max(serverCooldown, localCooldown));
       } catch (e) {
         setError("Connection error");
       }
     };
 
     init();
-    setTimeLeft(getRemainingTime());
 
     const unsubscribe = scoreService.subscribeToChanges(
-      (newScore) => setScore(newScore),
-      (newEntry) => setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT))
+      (newScore) => {
+        realtimeScoreVersion.current += 1;
+        setScore(newScore);
+      },
+      (newEntry) => {
+        setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT));
+        if (new Date(newEntry.created_at).toDateString() === new Date().toDateString()) {
+          setDailyChange(prev => prev + newEntry.delta);
+        }
+      }
     );
 
     return () => unsubscribe();
   }, [getRemainingTime]);
+
+  useEffect(() => {
+    let active = true;
+    let pending = false;
+    const refreshRate = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const rate = await scoreService.getFederalFundsRate();
+        if (active) setFederalFundsRate(rate);
+      } catch (error) {
+        console.warn("Federal funds rate refresh failed:", error);
+      } finally {
+        pending = false;
+      }
+    };
+    void refreshRate();
+    const interval = setInterval(refreshRate, 60_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // Handle cooldown timer
   useEffect(() => {
@@ -81,10 +155,28 @@ const App: React.FC = () => {
   }, [score]);
 
   const handleVote = useCallback(async (delta: number) => {
-    if (timeLeft > 0 || isUpdating) return;
+    if (timeLeft > 0 || isUpdating || federalFundsRate === null) return;
     setIsUpdating(true);
     try {
-      await scoreService.updateScore(delta);
+      // Double-check server-side cooldown to prevent bypass
+      const serverCooldown = await scoreService.checkCooldown();
+      if (serverCooldown > 0) {
+        setTimeLeft(serverCooldown);
+        return;
+      }
+
+      const versionBeforeVote = realtimeScoreVersion.current;
+      const newScore = await scoreService.updateScore(delta);
+      if (realtimeScoreVersion.current === versionBeforeVote) {
+        setScore(newScore);
+      } else {
+        // A concurrent change may be newer than the vote result. Read the shared score.
+        const versionBeforeRead = realtimeScoreVersion.current;
+        void scoreService.getScore().then((currentScore) => {
+          if (realtimeScoreVersion.current === versionBeforeRead) setScore(currentScore);
+        }).catch((err) => console.warn("Score refresh failed:", err));
+      }
+      await scoreService.recordVote();
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
     } catch (err) {
@@ -93,7 +185,7 @@ const App: React.FC = () => {
     } finally {
       setIsUpdating(false);
     }
-  }, [timeLeft, isUpdating]);
+  }, [timeLeft, isUpdating, federalFundsRate]);
 
   const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -103,6 +195,25 @@ const App: React.FC = () => {
     if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  const handleToggleAllTime = useCallback(async () => {
+    if (showAllTime) {
+      setShowAllTime(false);
+      return;
+    }
+    setShowAllTime(true);
+    if (!allHistory) {
+      setLoadingAllHistory(true);
+      try {
+        const all = await scoreService.getHistory(1000);
+        setAllHistory(all);
+      } catch (err) {
+        console.error('Failed to fetch all history:', err);
+      } finally {
+        setLoadingAllHistory(false);
+      }
+    }
+  }, [showAllTime, allHistory]);
 
   if (score === null && !error) {
     return (
@@ -133,37 +244,91 @@ const App: React.FC = () => {
           {score ?? 0}
         </div>
         
-        <div className="mt-4 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
+        <div className={`mt-2 text-sm font-bold font-mono ${dailyChange > 0 ? 'text-emerald-400' : dailyChange < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+          Today: {dailyChange > 0 ? '+' : ''}{dailyChange}
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 text-slate-500 text-[10px] font-mono">
           <span className={`w-2 h-2 rounded-full ${error ? 'bg-rose-500' : isCloud ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           {error ? 'SYNC ERROR' : isCloud ? 'CONNECTED' : 'LOCAL'}
         </div>
       </section>
 
+      {/* Federal Funds Rate Display */}
+      <section className="w-full max-w-md bg-gradient-to-r from-blue-900/30 to-purple-900/30 backdrop-blur-md rounded-2xl p-6 border border-blue-700/50 shadow-xl mb-8">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-blue-300 font-bold uppercase tracking-widest text-xs flex items-center gap-2">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+            Brady Point Federal Funds Rate
+          </h3>
+          <span className="text-2xl font-bangers text-blue-400">{federalFundsRate === null ? "—" : `${federalFundsRate.toFixed(1)}%`}</span>
+        </div>
+        <p className="text-slate-400 text-xs">
+          {federalFundsRate === null
+            ? 'Loading the shared vote rate…'
+            : 'Lower rates strengthen upvotes. Higher rates strengthen downvotes.'}
+        </p>
+      </section>
+
+      {timeLeft > 0 && (
+        <div className="w-full max-w-md mb-6 bg-slate-900/50 rounded-xl px-5 py-3 border border-slate-700 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></div>
+            <span className="text-slate-400 text-xs font-bold uppercase tracking-widest">Cooldown Active</span>
+          </div>
+          <span className="text-amber-400 text-sm font-mono font-bold">
+            {Math.floor(timeLeft / 60000)}:{Math.floor((timeLeft % 60000) / 1000).toString().padStart(2, '0')}
+          </span>
+        </div>
+      )}
+
       <section className="flex flex-col md:flex-row gap-6 w-full max-w-2xl justify-center items-center mb-12">
         <CooldownButton 
-          label="POINT UP (+5)" 
+          label={`POINT UP (+${positivePoints})`} 
           variant="up" 
-          onClick={() => handleVote(5)}
+          onClick={() => handleVote(positivePoints)}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
-          disabledGlobal={isUpdating}
+          disabledGlobal={isUpdating || federalFundsRate === null}
           isLoading={isUpdating}
         />
         
         <CooldownButton 
-          label="POINT DOWN (-5)" 
+          label={`POINT DOWN (-${negativePoints})`} 
           variant="down" 
-          onClick={() => handleVote(-5)}
+          onClick={() => handleVote(-negativePoints)}
           timeLeft={timeLeft}
           totalCooldown={COOLDOWN_MS}
-          disabledGlobal={isUpdating}
+          disabledGlobal={isUpdating || federalFundsRate === null}
           isLoading={isUpdating}
         />
       </section>
 
       {/* Analytics Graph */}
       <section className="w-full max-w-md mb-4">
-        <ScoreHistoryChart history={history} />
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={handleToggleAllTime}
+            className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full border transition-all duration-200"
+            style={{
+              color: showAllTime ? '#e94560' : '#64748b',
+              borderColor: showAllTime ? '#e9456040' : '#334155',
+              backgroundColor: showAllTime ? '#e9456010' : 'transparent',
+            }}
+          >
+            {loadingAllHistory ? (
+              <span className="animate-spin inline-block w-3 h-3 border border-rose-500 border-t-transparent rounded-full"></span>
+            ) : (
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
+              </svg>
+            )}
+            {showAllTime ? 'All Time' : 'Recent'}
+          </button>
+        </div>
+        <ScoreHistoryChart history={showAllTime && allHistory ? allHistory : history} />
       </section>
 
       {/* Activity Log Section */}
@@ -172,48 +337,57 @@ const App: React.FC = () => {
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          Recent Activity
+          Last 24 Hours
         </h3>
-        <div className="space-y-3">
-          {history.length === 0 ? (
-            <p className="text-slate-600 text-xs italic py-2">No recent activity detected.</p>
-          ) : (
-            history.slice(0, 5).map((entry) => (
+        <div className="space-y-3 max-h-60 overflow-y-auto pr-3">
+          {(() => {
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            const recent = history.filter(entry => new Date(entry.created_at).getTime() >= cutoff);
+            if (recent.length === 0) return (
+              <p className="text-slate-600 text-xs italic py-2">No activity in the last 24 hours.</p>
+            );
+            return recent.map((entry) => (
               <div key={entry.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50 last:border-0">
                 <div className="flex items-center gap-3">
                   <span className={`font-bold ${entry.delta > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
                   </span>
-                  <span className="text-slate-400">Score is now {entry.new_score}</span>
+                  <span className="text-slate-400">
+                    {entry.source === 'airline_market' && 'Airline market · '}
+                    {entry.source === 'crypto_market' && 'Crypto market · '}
+                    Score is now {entry.new_score}
+                  </span>
                 </div>
                 <span className="text-slate-600 text-[10px]">{formatRelativeTime(entry.created_at)}</span>
               </div>
-            ))
-          )}
+            ));
+          })()}
         </div>
       </section>
 
-      {/* News Summaries Section */}
-      {news.length > 0 && (
-        <section className="w-full max-w-md mt-8 bg-slate-900/30 rounded-2xl p-6 border border-slate-800">
-          <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
-            </svg>
-            News
-          </h3>
-          <div className="space-y-3">
-            {news.map((item) => (
-              <div key={item.id} className="py-2 border-b border-slate-800/50 last:border-0">
-                <p className="text-slate-300 text-xs leading-relaxed">{item.summary}</p>
-                <span className="text-slate-600 text-[10px] mt-1 block">
-                  {new Date(item.created_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* News Summaries Section - Today Only */}
+      {(() => {
+        const today = new Date().toDateString();
+        const todaysNews = news.filter(item => new Date(item.created_at).toDateString() === today);
+
+        return todaysNews.length > 0 ? (
+          <section className="w-full max-w-md mt-8 bg-slate-900/30 rounded-2xl p-6 border border-slate-800">
+            <h3 className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+              </svg>
+              Today's News
+            </h3>
+            <div className="space-y-3">
+              {todaysNews.map((item) => (
+                <div key={item.id} className="py-2 border-b border-slate-800/50 last:border-0">
+                  <p className="text-slate-300 text-xs leading-relaxed">{item.summary}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null;
+      })()}
 
       <footer className="mt-12 text-center text-slate-600 text-[10px] max-w-sm uppercase tracking-tighter">
         Secure Real-time Data Visualization.

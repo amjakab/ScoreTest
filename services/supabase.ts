@@ -10,6 +10,40 @@ export const supabase: SupabaseClient | null = (supabaseUrl && supabaseAnonKey)
   : null;
 
 const STORAGE_KEY = 'brady_score_persistent';
+const COOLDOWN_MS = 5 * 60 * 1000;
+
+let cachedIp: string | null = null;
+
+async function getClientIp(): Promise<string | null> {
+  if (cachedIp) return cachedIp;
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    const data = await res.json();
+    cachedIp = data.ip;
+    return cachedIp;
+  } catch {
+    return null;
+  }
+}
+
+const RATE_PROBABILITIES = [
+  { rate: 0.1, probability: 0.10 },
+  { rate: 1.0, probability: 0.15 },
+  { rate: 2.0, probability: 0.50 },
+  { rate: 3.0, probability: 0.15 },
+  { rate: 4.0, probability: 0.10 },
+];
+
+// Generate random Federal Funds Rate based on probability distribution
+const generateRandomRate = (): number => {
+  const random = Math.random();
+  let cumulative = 0;
+  for (const { rate, probability } of RATE_PROBABILITIES) {
+    cumulative += probability;
+    if (random < cumulative) return rate;
+  }
+  return 2.0; // Default to neutral rate
+};
 
 export const scoreService = {
   isConfigured(): boolean {
@@ -59,6 +93,25 @@ export const scoreService = {
     } catch (err) {
       console.error('Failed to fetch history:', err);
       return [];
+    }
+  },
+
+  async getTodayChange(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('delta')
+        .gte('created_at', todayStart.toISOString());
+
+      if (error) throw error;
+      return (data || []).reduce((sum, entry) => sum + entry.delta, 0);
+    } catch (err) {
+      console.error('Failed to fetch today change:', err);
+      return 0;
     }
   },
 
@@ -115,6 +168,46 @@ export const scoreService = {
     }
   },
 
+  async checkCooldown(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return 0;
+
+      const { data, error } = await supabase
+        .from('vote_cooldowns')
+        .select('last_voted_at')
+        .eq('ip_address', ip)
+        .single();
+
+      if (error || !data) return 0;
+
+      const elapsed = Date.now() - new Date(data.last_voted_at).getTime();
+      return Math.max(0, COOLDOWN_MS - elapsed);
+    } catch {
+      return 0;
+    }
+  },
+
+  async recordVote(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return;
+
+      const { error } = await supabase
+        .from('vote_cooldowns')
+        .upsert(
+          { ip_address: ip, last_voted_at: new Date().toISOString() },
+          { onConflict: 'ip_address' }
+        );
+
+      if (error) console.error('Failed to record vote cooldown:', error.message);
+    } catch (err) {
+      console.error('Failed to record vote cooldown:', err);
+    }
+  },
+
   async getNewsSummaries(): Promise<NewsSummary[]> {
     if (!supabase) return [];
     try {
@@ -129,6 +222,35 @@ export const scoreService = {
       console.error('Failed to fetch news summaries:', err);
       return [];
     }
+  },
+
+  async getFederalFundsRate(): Promise<number> {
+    const client = supabase;
+    if (!client) return 2;
+
+    const readRate = () => client
+      .from('federal_funds_rate')
+      .select('rate, updated_at')
+      .eq('id', 1)
+      .single();
+    const { data, error } = await readRate();
+    if (error) throw error;
+
+    const now = new Date().toISOString();
+    if (new Date(data.updated_at).toISOString().slice(0, 10) < now.slice(0, 10)) {
+      // Only the first client to see a new UTC day can rotate the shared rate.
+      const { error: updateError } = await client
+        .from('federal_funds_rate')
+        .update({ rate: generateRandomRate(), updated_at: now })
+        .eq('id', 1)
+        .eq('updated_at', data.updated_at);
+      if (updateError) throw updateError;
+      const refreshed = await readRate();
+      if (refreshed.error) throw refreshed.error;
+      return Number(refreshed.data.rate);
+    }
+
+    return Number(data.rate);
   },
 
   subscribeToChanges(onScore: (newScore: number) => void, onHistory: (entry: HistoryEntry) => void) {
