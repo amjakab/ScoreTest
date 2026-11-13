@@ -26,6 +26,25 @@ async function getClientIp(): Promise<string | null> {
   }
 }
 
+const RATE_PROBABILITIES = [
+  { rate: 0.1, probability: 0.10 },
+  { rate: 1.0, probability: 0.15 },
+  { rate: 2.0, probability: 0.50 },
+  { rate: 3.0, probability: 0.15 },
+  { rate: 4.0, probability: 0.10 },
+];
+
+// Generate random Federal Funds Rate based on probability distribution
+const generateRandomRate = (): number => {
+  const random = Math.random();
+  let cumulative = 0;
+  for (const { rate, probability } of RATE_PROBABILITIES) {
+    cumulative += probability;
+    if (random < cumulative) return rate;
+  }
+  return 2.0; // Default to neutral rate
+};
+
 export const scoreService = {
   isConfigured(): boolean {
     return !!supabase;
@@ -203,6 +222,35 @@ export const scoreService = {
       console.error('Failed to fetch news summaries:', err);
       return [];
     }
+  },
+
+  async getFederalFundsRate(): Promise<number> {
+    const client = supabase;
+    if (!client) return 2;
+
+    const readRate = () => client
+      .from('federal_funds_rate')
+      .select('rate, updated_at')
+      .eq('id', 1)
+      .single();
+    const { data, error } = await readRate();
+    if (error) throw error;
+
+    const now = new Date().toISOString();
+    if (new Date(data.updated_at).toISOString().slice(0, 10) < now.slice(0, 10)) {
+      // Only the first client to see a new UTC day can rotate the shared rate.
+      const { error: updateError } = await client
+        .from('federal_funds_rate')
+        .update({ rate: generateRandomRate(), updated_at: now })
+        .eq('id', 1)
+        .eq('updated_at', data.updated_at);
+      if (updateError) throw updateError;
+      const refreshed = await readRate();
+      if (refreshed.error) throw refreshed.error;
+      return Number(refreshed.data.rate);
+    }
+
+    return Number(data.rate);
   },
 
   subscribeToChanges(onScore: (newScore: number) => void, onHistory: (entry: HistoryEntry) => void) {
