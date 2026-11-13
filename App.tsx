@@ -23,6 +23,7 @@ const App: React.FC = () => {
   const [dailyChange, setDailyChange] = useState<number>(0);
   
   const prevScoreRef = useRef<number | null>(null);
+  const realtimeScoreVersion = useRef(0);
 
   const getRemainingTime = useCallback(() => {
     const lastVoted = localStorage.getItem(COOLDOWN_KEY);
@@ -60,7 +61,10 @@ const App: React.FC = () => {
     init();
 
     const unsubscribe = scoreService.subscribeToChanges(
-      (newScore) => setScore(newScore),
+      (newScore) => {
+        realtimeScoreVersion.current += 1;
+        setScore(newScore);
+      },
       (newEntry) => {
         setHistory(prev => [newEntry, ...prev].slice(0, HISTORY_LIMIT));
         if (new Date(newEntry.created_at).toDateString() === new Date().toDateString()) {
@@ -106,7 +110,17 @@ const App: React.FC = () => {
         return;
       }
 
-      await scoreService.updateScore(delta);
+      const versionBeforeVote = realtimeScoreVersion.current;
+      const newScore = await scoreService.updateScore(delta);
+      if (realtimeScoreVersion.current === versionBeforeVote) {
+        setScore(newScore);
+      } else {
+        // A concurrent change may be newer than the vote result. Read the shared score.
+        const versionBeforeRead = realtimeScoreVersion.current;
+        void scoreService.getScore().then((currentScore) => {
+          if (realtimeScoreVersion.current === versionBeforeRead) setScore(currentScore);
+        }).catch((err) => console.warn("Score refresh failed:", err));
+      }
       await scoreService.recordVote();
       localStorage.setItem(COOLDOWN_KEY, Date.now().toString());
       setTimeLeft(COOLDOWN_MS);
