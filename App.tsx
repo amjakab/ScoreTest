@@ -266,7 +266,8 @@ const App: React.FC = () => {
                     {entry.delta > 0 ? '▲' : '▼'} {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
                   </span>
                   <span className="text-slate-400">
-                    {entry.source === 'airline_market' ? 'Airline market · ' : ''}
+                    {entry.source === 'airline_market' && 'Airline market · '}
+                    {entry.source === 'crypto_market' && 'Crypto market · '}
                     Score is now {entry.new_score}
                   </span>
                 </div>
