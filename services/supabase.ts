@@ -26,6 +26,51 @@ async function getClientIp(): Promise<string | null> {
   }
 }
 
+// Federal Funds Rate probability distribution
+const RATE_PROBABILITIES = [
+  { rate: 0.1, probability: 0.10 },
+  { rate: 1.0, probability: 0.15 },
+  { rate: 2.0, probability: 0.50 },
+  { rate: 3.0, probability: 0.15 },
+  { rate: 4.0, probability: 0.10 },
+];
+
+// Generate random Federal Funds Rate based on probability distribution
+const generateRandomRate = (): number => {
+  const random = Math.random();
+  let cumulative = 0;
+  for (const { rate, probability } of RATE_PROBABILITIES) {
+    cumulative += probability;
+    if (random < cumulative) return rate;
+  }
+  return 2.0; // Default to neutral rate
+};
+
+// Check if we need to generate a new rate (daily)
+const shouldUpdateRate = (lastUpdated: string | null): boolean => {
+  if (!lastUpdated) return true;
+
+  const lastDate = new Date(lastUpdated);
+  const currentDate = new Date();
+
+  // Compare dates (ignoring time)
+  return lastDate.toDateString() !== currentDate.toDateString();
+};
+
+let cachedIp: string | null = null;
+
+async function getClientIp(): Promise<string | null> {
+  if (cachedIp) return cachedIp;
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    const data = await res.json();
+    cachedIp = data.ip;
+    return cachedIp;
+  } catch {
+    return null;
+  }
+}
+
 export const scoreService = {
   isConfigured(): boolean {
     return !!supabase;
@@ -203,6 +248,245 @@ export const scoreService = {
       console.error('Failed to fetch news summaries:', err);
       return [];
     }
+  },
+
+  async getFederalFundsRate(): Promise<{ rate: number; lastUpdated: string }> {
+    if (!supabase) {
+      const cached = localStorage.getItem(RATE_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return { rate: parsed.rate || 2.0, lastUpdated: parsed.lastUpdated || new Date().toISOString() };
+      }
+      return { rate: 2.0, lastUpdated: new Date().toISOString() };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('federal_funds_rate')
+        .select('rate, updated_at')
+        .eq('id', 1)
+        .single();
+
+      if (error) {
+        // If row doesn't exist, create it with a new random rate
+        if (error.code === 'PGRST116') {
+          const newRate = generateRandomRate();
+          const now = new Date().toISOString();
+          await supabase.from('federal_funds_rate').insert([{
+            id: 1,
+            rate: newRate,
+            updated_at: now
+          }]);
+          return { rate: newRate, lastUpdated: now };
+        }
+        throw error;
+      }
+
+      export const scoreService = {
+  isConfigured(): boolean {
+    return !!supabase;
+  },
+
+  async getScore(): Promise<number> {
+    if (!supabase) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? parseInt(saved, 10) : 0;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('brady_stats')
+        .select('score')
+        .eq('id', 1)
+        .single();
+
+      if (error) {
+        // If row doesn't exist, try to create it
+        if (error.code === 'PGRST116') {
+           await supabase.from('brady_stats').insert([{ id: 1, score: 0 }]);
+           return 0;
+        }
+        throw error;
+      }
+      return data.score;
+    } catch (error) {
+      console.warn('Supabase fetch failed:', error);
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? parseInt(saved, 10) : 0;
+    }
+  },
+
+  async getHistory(limit = 20): Promise<HistoryEntry[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      
+      if (error) throw error;
+      return data || [];
+    } catch (err) {
+      console.error('Failed to fetch history:', err);
+      return [];
+    }
+  },
+
+  async getTodayChange(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { data, error } = await supabase
+        .from('score_history')
+        .select('delta')
+        .gte('created_at', todayStart.toISOString());
+
+      if (error) throw error;
+      return (data || []).reduce((sum, entry) => sum + entry.delta, 0);
+    } catch (err) {
+      console.error('Failed to fetch today change:', err);
+      return 0;
+    }
+  },
+
+  async updateScore(delta: number): Promise<number> {
+    if (!supabase) {
+      const current = await this.getScore();
+      const next = current + delta;
+      localStorage.setItem(STORAGE_KEY, next.toString());
+      return next;
+    }
+
+    try {
+      let finalScore: number;
+
+      // 1. Try atomic increment via RPC
+      const { data: rpcData, error: rpcError } = await supabase.rpc('increment_score', { delta_val: delta });
+      
+      if (!rpcError && rpcData !== null) {
+        finalScore = rpcData;
+      } else {
+        console.warn('RPC failed, falling back to manual update:', rpcError?.message);
+        
+        const currentScore = await this.getScore();
+        const nextScore = currentScore + delta;
+        
+        const { data: updateData, error: updateError } = await supabase
+          .from('brady_stats')
+          .update({ score: nextScore, updated_at: new Date().toISOString() })
+          .eq('id', 1)
+          .select('score')
+          .single();
+        
+        if (updateError) throw new Error(`DB Update Error: ${updateError.message}`);
+        finalScore = updateData.score;
+      }
+
+      // 2. Log to History (Crucial for the Graph)
+      const { error: historyError } = await supabase
+        .from('score_history')
+        .insert([{ 
+          delta: delta, 
+          new_score: finalScore 
+        }]);
+
+      if (historyError) {
+        console.error('History Log Error (Check if columns delta/new_score exist):', historyError.message);
+      }
+
+      localStorage.setItem(STORAGE_KEY, finalScore.toString());
+      return finalScore;
+    } catch (error: any) {
+      console.error('CRITICAL: Update failed:', error.message);
+      throw error;
+    }
+  },
+
+  async checkCooldown(): Promise<number> {
+    if (!supabase) return 0;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return 0;
+
+      const { data, error } = await supabase
+        .from('vote_cooldowns')
+        .select('last_voted_at')
+        .eq('ip_address', ip)
+        .single();
+
+      if (error || !data) return 0;
+
+      const elapsed = Date.now() - new Date(data.last_voted_at).getTime();
+      return Math.max(0, COOLDOWN_MS - elapsed);
+    } catch {
+      return 0;
+    }
+  },
+
+  async recordVote(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const ip = await getClientIp();
+      if (!ip) return;
+
+      const { error } = await supabase
+        .from('vote_cooldowns')
+        .upsert(
+          { ip_address: ip, last_voted_at: new Date().toISOString() },
+          { onConflict: 'ip_address' }
+        );
+
+      if (error) console.error('Failed to record vote cooldown:', error.message);
+    } catch (err) {
+      console.error('Failed to record vote cooldown:', err);
+    }
+  },
+
+  async getNewsSummaries(): Promise<NewsSummary[]> {
+    if (!supabase) return [];
+    try {
+      const { data, error } = await supabase
+        .from('news_summaries')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    } catch (err) {
+      console.error('Failed to fetch news summaries:', err);
+      return [];
+    }
+  },
+
+  async getFederalFundsRate(): Promise<number> {
+    if (!supabase) return 2;
+
+    const readRate = () => supabase!
+      .from('federal_funds_rate')
+      .select('rate, updated_at')
+      .eq('id', 1)
+      .single();
+    const { data, error } = await readRate();
+    if (error) throw error;
+
+    const now = new Date().toISOString();
+    if (new Date(data.updated_at).toISOString().slice(0, 10) < now.slice(0, 10)) {
+      // Only the first client to see a new UTC day can rotate the shared rate.
+      const { error: updateError } = await supabase
+        .from('federal_funds_rate')
+        .update({ rate: generateRandomRate(), updated_at: now })
+        .eq('id', 1)
+        .eq('updated_at', data.updated_at);
+      if (updateError) throw updateError;
+      const refreshed = await readRate();
+      if (refreshed.error) throw refreshed.error;
+      return Number(refreshed.data.rate);
+    }
+
+    return Number(data.rate);
   },
 
   subscribeToChanges(onScore: (newScore: number) => void, onHistory: (entry: HistoryEntry) => void) {
